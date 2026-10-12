@@ -1,293 +1,484 @@
-import requests
-from datetime import datetime, timezone
-from typing import Optional, Dict, Any, List
+import argparse
+import json
+import os
+import re
+import sys
+import time
+import zipfile
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
-BASE_URL = "https://nhentai.net/api/v2/search"
-GALLERIES_URL = "https://nhentai.net/api/v2/galleries"
-GALLERY_URL = "https://nhentai.net/api/v2/galleries/{id}"
-GALLERY_FAV_URL = "https://nhentai.net/api/v2/galleries/{id}/favorite"
-FAVORITES_URL = "https://nhentai.net/api/v2/favorites"
-TAGS_SEARCH_URL = "https://nhentai.net/api/v2/tags/search"
-BLACKLIST_URL = "https://nhentai.net/api/v2/blacklist"
-CDN_URL = "https://nhentai.net/api/v2/cdn"
-VALID_SORTS = {"date", "popular", "popular-today", "popular-week", "popular-month"}
-VALID_TAG_TYPES = {"artist", "category", "character", "group", "language", "parody", "tag"}
+from .client import NHentaiClient
+from .config import get_api_key, set_api_key, delete_api_key
 
 
-def _format_date(ts: Optional[int]) -> Optional[str]:
-    if not ts:
-        return None
-    return datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%d")
+def _require_api(api_key):
+    if not api_key:
+        print("Error: API key required. Use nh-api login nhk_... first.", file=sys.stderr)
+        sys.exit(1)
 
 
-def _group_tags(tags: List[Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]]:
-    grouped: Dict[str, List[Dict[str, Any]]] = {}
-    for t in tags or []:
-        ttype = t.get("type") or "unknown"
-        grouped.setdefault(ttype, []).append({"id": t.get("id"), "name": t.get("name")})
-    return grouped
+def _print_search_results(data, as_json, header=None, show_links=False, api_key=None):
+    if as_json:
+        print(json.dumps(data, indent=2, ensure_ascii=False))
+        return
+    if header:
+        print(header)
+    for i, r in enumerate(data["results"]):
+        if i > 0:
+            print()
+        print(r["title"])
+    print()
+    print("Page: {} pages | Total: {} results".format(data.get("num_pages"), data.get("total")))
+    if show_links:
+        print()
+        print("Image links:")
+        for r in data["results"]:
+            print()
+            print(r["title"])
+            try:
+                with NHentaiClient() as c:
+                    g = c.gallery(r["id"], api_key=api_key)
+                for p in g["pages"]:
+                    print(p["image"]["url"])
+            except Exception as e:
+                print("  error: {}".format(e))
 
 
-def _assign_servers(servers: List[str], n: int) -> List[str]:
-    if not servers or n <= 0:
-        return []
-    return (servers * (n // len(servers) + 1))[:n]
+def _print_gallery(data, as_json, show_links=False):
+    if as_json:
+        print(json.dumps(data, indent=2, ensure_ascii=False))
+        return
+    print(data["title"])
+    titles = data.get("titles") or {}
+    if titles.get("english") and titles.get("english") != data["title"]:
+        print("English: {}".format(titles["english"]))
+    if titles.get("japanese"):
+        print("Japanese: {}".format(titles["japanese"]))
+    fav = data.get("is_favorited")
+    if fav is True:
+        print("Favorited: yes")
+    elif fav is False:
+        print("Favorited: no")
+    print("Date: {}".format(data["upload_date"]))
+    print("Pages: {} | Favorites: {}".format(data["num_pages"], data["num_favorites"]))
+    if data.get("scanlator"):
+        print("Scanlator: {}".format(data["scanlator"]))
+    print()
+    print("Tags:")
+    for ttype, items in data["tags"].items():
+        names = ", ".join("{}({})".format(t["name"], t["id"]) for t in items)
+        print("  {}: {}".format(ttype, names))
+    if show_links:
+        print()
+        print("Image links:")
+        for pg in data["pages"]:
+            print(pg["image"]["url"])
 
 
-def _build_pages(pages, image_servers, thumb_servers):
-    n = len(pages or [])
-    imgs = _assign_servers(image_servers, n)
-    thumbs = _assign_servers(thumb_servers, n)
-    out = []
-    for p, img_base, th_base in zip(pages, imgs, thumbs):
-        img_path = (p.get("path") or "").lstrip("/")
-        th_path = (p.get("thumbnail") or "").lstrip("/")
-        out.append({
-            "number": p.get("number"),
-            "image": {"url": f"{img_base}/{img_path}" if img_path else None, "width": p.get("width"), "height": p.get("height")},
-            "thumbnail": {"url": f"{th_base}/{th_path}" if th_path else None, "width": p.get("thumbnail_width"), "height": p.get("thumbnail_height")},
-        })
-    return out
+def _do_search(args, api_key):
+    query = args.query
+    page = args.page if args.page is not None else 1
+    with NHentaiClient() as client:
+        data = client.search(query, sort="date", page=page, api_key=api_key)
+    _print_search_results(data, args.json, show_links=args.image_links, api_key=api_key)
 
 
-def _format_gallery_item(item, base_url):
-    eng = item.get("english_title")
-    jp = item.get("japanese_title")
-    title = eng if eng not in (None, "") else jp
-    thumb_path = (item.get("thumbnail") or "").lstrip("/")
-    url = f"{base_url}/{thumb_path}" if base_url and thumb_path else None
-    return {
-        "id": item.get("id"),
-        "title": title,
-        "thumbnail": {"url": url, "width": item.get("thumbnail_width"), "height": item.get("thumbnail_height")},
-        "num_pages": item.get("num_pages"),
-        "num_favorites": item.get("num_favorites"),
-        "blacklisted": item.get("blacklisted"),
-    }
+def _do_gallery(args, api_key):
+    with NHentaiClient() as client:
+        data = client.gallery(args.gallery_id, api_key=api_key)
+    if args.txt:
+        base = _build_output_base(".", data["id"], data["title"] or "gallery_{}".format(data["id"]), data.get("tags"))
+        out = base + ".txt"
+        with open(out, "w", encoding="utf-8") as f:
+            for pg in data["pages"]:
+                f.write(pg["image"]["url"] + "\n")
+        print("Saved: {}".format(out))
+        return
+    _print_gallery(data, args.json, show_links=args.image_links)
 
 
-class NHentaiClient:
-    def __init__(self, api_key: Optional[str] = None, timeout: int = 30):
-        self.api_key = api_key
-        self.timeout = timeout
-        self.session = requests.Session()
-        headers = {"accept": "*/*"}
-        if self.api_key:
-            headers["Authorization"] = f"Key {self.api_key}"
-        self.session.headers.update(headers)
+def _do_zip(args, api_key):
+    _require_api(api_key)
+    with NHentaiClient() as client:
+        info = client.get_download_url(args.gallery_id, "zip", api_key=api_key)
+    print(json.dumps(info, indent=2, ensure_ascii=False))
 
-    def _headers_for(self, api_key):
-        if api_key is None or api_key == self.api_key:
-            return None
-        return {"Authorization": f"Key {api_key}"}
 
-    def _raw_search(self, query, sort, page, api_key=None):
-        r = self.session.get(BASE_URL, params={"query": query, "sort": sort, "page": page},
-                             headers=self._headers_for(api_key), timeout=self.timeout)
-        r.raise_for_status()
-        return r.json()
+def _do_cbz(args, api_key):
+    _require_api(api_key)
+    with NHentaiClient() as client:
+        info = client.get_download_url(args.gallery_id, "cbz", api_key=api_key)
+    print(json.dumps(info, indent=2, ensure_ascii=False))
 
-    def _raw_galleries(self, page=1, per_page=25, sort=None, api_key=None):
-        params = {"page": page, "per_page": per_page}
-        if sort:
-            params["sort"] = sort
-        r = self.session.get(GALLERIES_URL, params=params,
-                             headers=self._headers_for(api_key), timeout=self.timeout)
-        r.raise_for_status()
-        return r.json()
 
-    def _raw_gallery(self, gallery_id, include=None, api_key=None):
-        params = {}
-        if include:
-            params["include"] = include
-        r = self.session.get(GALLERY_URL.format(id=gallery_id), params=params or None,
-                             headers=self._headers_for(api_key), timeout=self.timeout)
-        r.raise_for_status()
-        return r.json()
+def _do_torrent(args, api_key):
+    _require_api(api_key)
+    with NHentaiClient() as client:
+        info = client.get_download_url(args.gallery_id, "torrent", api_key=api_key)
+    print(json.dumps(info, indent=2, ensure_ascii=False))
 
-    def _get_cdn(self, api_key=None):
-        r = self.session.get(CDN_URL, headers=self._headers_for(api_key), timeout=self.timeout)
-        r.raise_for_status()
-        return r.json()
 
-    def _raw_download(self, gallery_id, fmt, api_key=None):
-        url = f"https://nhentai.net/api/v2/galleries/{gallery_id}/download"
-        r = self.session.post(url, params={"format": fmt},
-                              headers=self._headers_for(api_key), timeout=self.timeout)
-        r.raise_for_status()
-        return r.json()
+def _do_fav_add(args, api_key):
+    _require_api(api_key)
+    with NHentaiClient() as client:
+        client.fav_add(args.gallery_id, api_key=api_key)
+    print("Favorited: {}".format(args.gallery_id))
 
-    def _raw_fav_add(self, gallery_id, api_key=None):
-        r = self.session.post(GALLERY_FAV_URL.format(id=gallery_id),
-                              headers=self._headers_for(api_key), timeout=self.timeout)
-        r.raise_for_status()
+
+def _do_fav_rm(args, api_key):
+    _require_api(api_key)
+    with NHentaiClient() as client:
+        client.fav_rm(args.gallery_id, api_key=api_key)
+    print("Unfavorited: {}".format(args.gallery_id))
+
+
+def _do_fav_list(args, api_key):
+    _require_api(api_key)
+    page = args.page if args.page is not None else 1
+    with NHentaiClient() as client:
+        data = client.fav_list(page=page, api_key=api_key)
+    _print_search_results(data, args.json, header="Favorites (page {})".format(page), show_links=args.image_links, api_key=api_key)
+
+
+def _swap_cdn(url, image_servers, attempt):
+    for srv in image_servers:
+        if srv in url:
+            idx = image_servers.index(srv)
+            new_idx = (idx + attempt) % len(image_servers)
+            return url.replace(srv, image_servers[new_idx])
+    return url
+
+
+def _download_single_page(session, url, image_servers, retries=4):
+    last_err = None
+    for attempt in range(retries):
+        current = _swap_cdn(url, image_servers, attempt) if attempt else url
         try:
-            return r.json()
-        except ValueError:
-            return {}
+            r = session.get(current, timeout=30)
+            r.raise_for_status()
+            return r.content
+        except Exception as e:
+            last_err = e
+            time.sleep(1 + attempt)
+    raise last_err
 
-    def _raw_fav_rm(self, gallery_id, api_key=None):
-        r = self.session.delete(GALLERY_FAV_URL.format(id=gallery_id),
-                                headers=self._headers_for(api_key), timeout=self.timeout)
-        r.raise_for_status()
+
+def _parse_ids(raw):
+    ids = []
+    for token in raw:
+        for part in token.split(","):
+            part = part.strip()
+            if not part:
+                continue
+            try:
+                ids.append(int(part))
+            except ValueError:
+                raise ValueError("Invalid ID: {}".format(part))
+    return ids
+
+
+def _safe_filename(title, gid):
+    safe = re.sub(r"[\x00-\x1f/\\\\:*?\"<>|]", "_", title)
+    safe = safe.strip().rstrip(".")
+    if not safe:
+        safe = "gallery_{}".format(gid)
+    return safe
+
+
+def _build_output_base(output_dir, gid, title, tags):
+    tags = tags or {}
+    artists = [t.get("name") for t in tags.get("artist", []) if t.get("name")]
+    groups = [t.get("name") for t in tags.get("group", []) if t.get("name")]
+    if not artists or len(artists) > 5:
+        chosen = groups if groups else artists
+    else:
+        chosen = artists
+    seen = []
+    for name in chosen:
+        if name and name not in seen:
+            seen.append(name)
+    cat_str = "-".join(seen)
+    safe_title = _safe_filename(title, gid)
+    if cat_str:
+        base = "{} -{} {}".format(cat_str, gid, safe_title)
+    else:
+        base = "{} - {}".format(gid, safe_title)
+    if len(base) > 180:
+        base = base[:180]
+    return os.path.join(output_dir, base)
+
+
+def _check_pillow():
+    try:
+        from PIL import Image  # noqa
+        return True
+    except Exception:
+        return False
+
+
+def _download_all_pages(client, pages, image_servers):
+    total = len(pages)
+    results = {}
+    failed = []
+    completed = 0
+    with ThreadPoolExecutor(max_workers=min(50, total)) as executor:
+        futures = {}
+        for pg in pages:
+            futures[executor.submit(_download_single_page, client.session, pg["image"]["url"], image_servers)] = pg["number"]
+        for future in as_completed(futures):
+            num = futures[future]
+            try:
+                results[num] = future.result()
+            except Exception as e:
+                failed.append((num, str(e)))
+            completed += 1
+            pct = int(completed * 100 / total)
+            bar = "#" * (pct // 4) + "-" * (25 - pct // 4)
+            sys.stdout.write("\r[{}] {}%  ({}/{})  failed: {}".format(bar, pct, completed, total, len(failed)))
+            sys.stdout.flush()
+    sys.stdout.write("\n")
+    return results, failed
+
+
+def _write_cbz(output, results):
+    with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as zf:
+        for num in sorted(results.keys()):
+            zf.writestr("{:03d}.jpg".format(num), results[num])
+
+
+def _write_raw(output_dir, results):
+    os.makedirs(output_dir, exist_ok=True)
+    for num in sorted(results.keys()):
+        path = os.path.join(output_dir, "{:03d}.jpg".format(num))
+        with open(path, "wb") as f:
+            f.write(results[num])
+
+
+def _write_pdf(output, results):
+    from PIL import Image
+    import io as _io
+    images = []
+    for num in sorted(results.keys()):
+        data = results[num]
         try:
-            return r.json()
-        except ValueError:
-            return {}
+            img = Image.open(_io.BytesIO(data))
+            if img.mode != "RGB":
+                img = img.convert("RGB")
+            images.append(img)
+        except Exception:
+            continue
+    if not images:
+        raise RuntimeError("No valid images to build the PDF")
+    first, rest = images[0], images[1:]
+    first.save(output, "PDF", save_all=True, append_images=rest)
 
-    def _raw_favorites(self, page=1, api_key=None):
-        r = self.session.get(FAVORITES_URL, params={"page": page},
-                             headers=self._headers_for(api_key), timeout=self.timeout)
-        r.raise_for_status()
-        return r.json()
 
-    def _raw_tags_search(self, tag_type, query, limit=50, api_key=None):
-        if tag_type not in VALID_TAG_TYPES:
-            raise ValueError("Invalid tag type. Must be one of: {}".format(", ".join(sorted(VALID_TAG_TYPES))))
-        payload = {"type": tag_type, "query": query, "limit": limit}
-        r = self.session.post(TAGS_SEARCH_URL, json=payload,
-                              headers=self._headers_for(api_key), timeout=self.timeout)
-        r.raise_for_status()
-        return r.json()
+def _download_one(client, gallery_id, output_dir, fmt="cbz"):
+    gallery = client.gallery(gallery_id)
+    gid = gallery["id"]
+    title = gallery["title"] or "gallery_{}".format(gid)
+    base = _build_output_base(output_dir, gid, title, gallery.get("tags"))
+    pages = gallery["pages"]
+    image_servers = gallery.get("_image_servers") or ["https://i1.nhentai.net", "https://i2.nhentai.net", "https://i3.nhentai.net", "https://i4.nhentai.net"]
+    total = len(pages)
+    print("[*] [{}] {} ({} pages)".format(gid, title, total))
+    results, failed = _download_all_pages(client, pages, image_servers)
+    if fmt == "cbz":
+        output = base + ".cbz"
+        _write_cbz(output, results)
+        print("[+] Saved: {}  ({}/{} images)".format(output, len(results), total))
+    elif fmt == "raw":
+        _write_raw(base, results)
+        print("[+] Saved: {}/  ({}/{} images)".format(base, len(results), total))
+    elif fmt == "pdf":
+        output = base + ".pdf"
+        _write_pdf(output, results)
+        print("[+] Saved: {}  ({}/{} images)".format(output, len(results), total))
+    elif fmt == "zip":
+        output = base + ".zip"
+        _write_cbz(output, results)
+        print("[+] Saved: {}  ({}/{} images)".format(output, len(results), total))
+    if failed:
+        print("[!] Failed {} pages: {}".format(len(failed), ", ".join(str(n) for n, _ in failed)))
+    return base, len(results), len(failed)
 
-    def _raw_blacklist_get(self, api_key=None):
-        r = self.session.get(BLACKLIST_URL, headers=self._headers_for(api_key), timeout=self.timeout)
-        r.raise_for_status()
-        return r.json()
 
-    def _raw_blacklist_update(self, added=None, removed=None, api_key=None):
-        payload = {"added": added or [], "removed": removed or []}
-        r = self.session.post(BLACKLIST_URL, json=payload,
-                              headers=self._headers_for(api_key), timeout=self.timeout)
-        r.raise_for_status()
-        return r.json()
+def _do_download(args, api_key):
+    ids = _parse_ids(args.gallery_id)
+    output_dir = args.output or "."
+    os.makedirs(output_dir, exist_ok=True)
+    fmt = "cbz"
+    if args.raw:
+        fmt = "raw"
+    elif args.pdf:
+        fmt = "pdf"
+    elif args.zip:
+        fmt = "zip"
+    if fmt == "pdf" and not _check_pillow():
+        print("Error: Pillow is required for PDF output. Install it with: pip install Pillow", file=sys.stderr)
+        sys.exit(1)
+    with NHentaiClient() as client:
+        for gid in ids:
+            try:
+                _download_one(client, gid, output_dir, fmt=fmt)
+            except Exception as e:
+                print("[!] Error with {}: {}".format(gid, e), file=sys.stderr)
 
-    def get_download_url(self, gallery_id, fmt="zip", api_key=None):
-        data = self._raw_download(gallery_id, fmt, api_key=api_key)
-        return {"url": data.get("url"), "expires_at": data.get("expires_at")}
 
-    def download_gallery(self, gallery_id, fmt="zip", output_path=None, api_key=None):
-        info = self.get_download_url(gallery_id, fmt, api_key=api_key)
-        if output_path is None:
-            output_path = f"{gallery_id}.{fmt}"
-        r = self.session.get(info["url"], stream=True, timeout=self.timeout)
-        r.raise_for_status()
-        with open(output_path, "wb") as f:
-            for chunk in r.iter_content(chunk_size=8192):
-                f.write(chunk)
-        return output_path
+def main():
+    parser = argparse.ArgumentParser(
+        prog="nh-api",
+        description="CLI client for the nhentai v2 API. Search, view galleries, manage favorites and download CBZ/PDF/RAW files.",
+        epilog="Examples:\n"
+               "  nh-api login nhk_xxxxxxxx\n"
+               "  nh-api search \"language:english catgirl\"\n"
+               "  nh-api search \"catgirl\" 2\n"
+               "  nh-api search \"catgirl\" -i\n"
+               "  nh-api code 12345\n"
+               "  nh-api code 12345 -i\n"
+               "  nh-api code 12345 -txt\n"
+               "  nh-api dl 12345\n"
+               "  nh-api dl 12345 --raw\n"
+               "  nh-api dl 12345 --pdf\n"
+               "  nh-api dl 12345 --zip\n"
+               "  nh-api dl 1,2,3 -o ~/Downloads\n"
+               "  nh-api fav add 12345\n"
+               "  nh-api fav list\n"
+               "  nh-api logout",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument("--json", action="store_true", help="Output raw JSON instead of formatted text")
+    sub = parser.add_subparsers(dest="command", metavar="<command>")
 
-    def fav_add(self, gallery_id, api_key=None):
-        return self._raw_fav_add(gallery_id, api_key=api_key)
+    p_search = sub.add_parser(
+        "search",
+        help="Search galleries by query",
+        description="Search nhentai using a query string. Optionally specify a page. Use -i to also print image links for each result.",
+    )
+    p_search.add_argument("query", type=str, help="Search query (put it in quotes, e.g. \"language:english catgirl\")")
+    p_search.add_argument("page", nargs="?", type=int, default=None, help="Page number (default: 1)")
+    p_search.add_argument("-i", "--image-links", action="store_true", dest="image_links", help="Also print image links for each result")
+    p_search.set_defaults(func=_do_search)
 
-    def fav_rm(self, gallery_id, api_key=None):
-        return self._raw_fav_rm(gallery_id, api_key=api_key)
+    p_code = sub.add_parser(
+        "code",
+        help="Show gallery info by ID",
+        description="Fetch and display info for a gallery by its numeric ID. Use -i to also print the image links, or -txt to save the links to a .txt file.",
+    )
+    p_code.add_argument("gallery_id", type=int, help="Gallery numeric ID (e.g. 12345)")
+    p_code.add_argument("-i", "--image-links", action="store_true", dest="image_links", help="Also print the image links")
+    p_code.add_argument("-txt", "--txt", action="store_true", dest="txt", help="Save the image links to a .txt file (same naming format as 'dl')")
+    p_code.set_defaults(func=_do_gallery)
 
-    def fav_list(self, page=1, api_key=None):
-        data = self._raw_favorites(page, api_key=api_key)
-        raw_results = (data.get("result") or data.get("results") or [])[:25]
-        cdn = self._get_cdn(api_key=api_key)
-        thumb_servers = cdn.get("thumb_servers") or []
-        servers = _assign_servers(thumb_servers, len(raw_results))
-        results = []
-        for item, base in zip(raw_results, servers):
-            results.append(_format_gallery_item(item, base))
-        return {"results": results, "num_pages": data.get("num_pages"), "total": data.get("total")}
+    p_zip = sub.add_parser(
+        "zip",
+        help="Get a ZIP download URL (requires API key)",
+        description="Ask the API for a temporary ZIP download URL. Requires an API key saved with 'nh-api login'.",
+    )
+    p_zip.add_argument("gallery_id", type=int, help="Gallery numeric ID")
+    p_zip.set_defaults(func=_do_zip)
 
-    def search(self, query, sort="date", page=1, api_key=None):
-        if sort not in VALID_SORTS:
-            raise ValueError(f"Invalid sort: {sort}")
-        if page < 1:
-            raise ValueError("page must be >= 1")
-        data = self._raw_search(query, sort, page, api_key=api_key)
-        raw_results = (data.get("result") or data.get("results") or [])[:25]
-        cdn = self._get_cdn(api_key=api_key)
-        thumb_servers = cdn.get("thumb_servers") or []
-        if not thumb_servers:
-            raise RuntimeError("No thumb_servers returned from /cdn")
-        servers = _assign_servers(thumb_servers, len(raw_results))
-        results = []
-        for item, base in zip(raw_results, servers):
-            results.append(_format_gallery_item(item, base))
-        return {"results": results, "num_pages": data.get("num_pages"), "total": data.get("total")}
+    p_cbz = sub.add_parser(
+        "cbz",
+        help="Get a CBZ download URL (requires API key)",
+        description="Ask the API for a temporary CBZ download URL. Requires an API key saved with 'nh-api login'.",
+    )
+    p_cbz.add_argument("gallery_id", type=int, help="Gallery numeric ID")
+    p_cbz.set_defaults(func=_do_cbz)
 
-    def galleries(self, page=1, per_page=25, sort="date", api_key=None):
-        if page < 1:
-            raise ValueError("page must be >= 1")
-        if per_page < 1 or per_page > 100:
-            raise ValueError("per_page must be between 1 and 100")
-        if sort not in VALID_SORTS:
-            raise ValueError(f"Invalid sort: {sort}")
-        data = self._raw_galleries(page=page, per_page=per_page, sort=sort, api_key=api_key)
-        raw_results = (data.get("result") or data.get("results") or [])[:per_page]
-        cdn = self._get_cdn(api_key=api_key)
-        thumb_servers = cdn.get("thumb_servers") or []
-        if not thumb_servers:
-            raise RuntimeError("No thumb_servers returned from /cdn")
-        servers = _assign_servers(thumb_servers, len(raw_results))
-        results = []
-        for item, base in zip(raw_results, servers):
-            results.append(_format_gallery_item(item, base))
-        return {
-            "results": results,
-            "num_pages": data.get("num_pages"),
-            "per_page": data.get("per_page"),
-            "total": data.get("total"),
-        }
+    p_torrent = sub.add_parser(
+        "torrent",
+        help="Get a torrent download URL (requires API key)",
+        description="Ask the API for a temporary torrent URL. Requires an API key saved with 'nh-api login'.",
+    )
+    p_torrent.add_argument("gallery_id", type=int, help="Gallery numeric ID")
+    p_torrent.set_defaults(func=_do_torrent)
 
-    def tags_search(self, tag_type, query, limit=50, api_key=None):
-        data = self._raw_tags_search(tag_type, query, limit, api_key=api_key)
-        items = data if isinstance(data, list) else (data.get("result") or data.get("results") or [])
-        return [{"id": t.get("id"), "name": t.get("name")} for t in items]
+    p_dl = sub.add_parser(
+        "download",
+        help="Download galleries (no API key required)",
+        description="Download one or more galleries. Default output is .cbz. Use --raw to save individual images into a folder, --pdf to build a PDF (requires Pillow), or --zip to save a zip archive. Accepts a single ID, a comma-separated list, or space-separated IDs.",
+    )
+    p_dl.add_argument("gallery_id", nargs="+", help="One or more gallery IDs (e.g. 12345 or 1,2,3 or 1 2 3)")
+    p_dl.add_argument("-o", "--output", default=None, help="Output directory (default: current directory)")
+    p_dl.add_argument("--raw", action="store_true", help="Save individual images into a folder instead of a CBZ")
+    p_dl.add_argument("--pdf", action="store_true", help="Build a PDF using Pillow (must be installed)")
+    p_dl.add_argument("--zip", action="store_true", help="Save a ZIP archive instead of a CBZ")
+    p_dl.set_defaults(func=_do_download)
 
-    def blacklist(self, api_key=None):
-        data = self._raw_blacklist_get(api_key=api_key)
-        items = data.get("tags") or []
-        return {
-            "tags": [{"id": t.get("id"), "name": t.get("name")} for t in items],
-            "count": data.get("count"),
-        }
+    p_dl2 = sub.add_parser(
+        "dl",
+        help="Alias of 'download'",
+        description="Alias of the 'download' command. Same behavior and options.",
+    )
+    p_dl2.add_argument("gallery_id", nargs="+", help="One or more gallery IDs")
+    p_dl2.add_argument("-o", "--output", default=None, help="Output directory (default: current directory)")
+    p_dl2.add_argument("--raw", action="store_true", help="Save individual images into a folder instead of a CBZ")
+    p_dl2.add_argument("--pdf", action="store_true", help="Build a PDF using Pillow (must be installed)")
+    p_dl2.add_argument("--zip", action="store_true", help="Save a ZIP archive instead of a CBZ")
+    p_dl2.set_defaults(func=_do_download)
 
-    def blacklist_update(self, added=None, removed=None, api_key=None):
-        return self._raw_blacklist_update(added=added, removed=removed, api_key=api_key)
+    p_fav = sub.add_parser(
+        "fav",
+        help="Manage favorites (requires API key)",
+        description="Add, remove or list favorites. Requires an API key saved with 'nh-api login'.",
+    )
+    fav_sub = p_fav.add_subparsers(dest="fav_cmd", metavar="<subcommand>")
 
-    def gallery(self, gallery_id, api_key=None):
-        data = self._raw_gallery(gallery_id, include="favorite", api_key=api_key)
-        title_obj = data.get("title") or {}
-        pretty = title_obj.get("pretty")
-        eng = title_obj.get("english")
-        jp = title_obj.get("japanese")
-        title = pretty if pretty not in (None, "") else (eng if eng not in (None, "") else jp)
-        cdn = self._get_cdn(api_key=api_key)
-        image_servers = cdn.get("image_servers") or []
-        thumb_servers = cdn.get("thumb_servers") or []
-        cover = data.get("cover") or {}
-        thumb = data.get("thumbnail") or {}
-        cover_path = (cover.get("path") or "").lstrip("/")
-        thumb_path = (thumb.get("path") or "").lstrip("/")
-        cover_url = f"{image_servers[0]}/{cover_path}" if image_servers and cover_path else None
-        thumb_url = f"{thumb_servers[0]}/{thumb_path}" if thumb_servers and thumb_path else None
-        return {
-            "id": data.get("id"),
-            "title": title,
-            "titles": {"english": eng, "japanese": jp, "pretty": pretty},
-            "is_favorited": data.get("is_favorited"),
-            "upload_date": _format_date(data.get("upload_date")),
-            "num_pages": data.get("num_pages"),
-            "num_favorites": data.get("num_favorites"),
-            "scanlator": data.get("scanlator"),
-            "cover": {"url": cover_url, "width": cover.get("width"), "height": cover.get("height")},
-            "thumbnail": {"url": thumb_url, "width": thumb.get("width"), "height": thumb.get("height")},
-            "tags": _group_tags(data.get("tags") or []),
-            "pages": _build_pages(data.get("pages") or [], image_servers, thumb_servers),
-            "_image_servers": image_servers,
-        }
+    p_fav_add = fav_sub.add_parser(
+        "add",
+        help="Add a gallery to favorites",
+        description="Mark a gallery as favorite. Requires an API key saved with 'nh-api login'.",
+    )
+    p_fav_add.add_argument("gallery_id", type=int, help="Gallery numeric ID")
+    p_fav_add.set_defaults(func=_do_fav_add)
 
-    def close(self):
-        self.session.close()
+    p_fav_rm = fav_sub.add_parser(
+        "rm",
+        help="Remove a gallery from favorites",
+        description="Remove a gallery from your favorites. Requires an API key saved with 'nh-api login'.",
+    )
+    p_fav_rm.add_argument("gallery_id", type=int, help="Gallery numeric ID")
+    p_fav_rm.set_defaults(func=_do_fav_rm)
 
-    def __enter__(self):
-        return self
+    p_fav_list = fav_sub.add_parser(
+        "list",
+        help="List your favorites",
+        description="List favorites page by page. Use -i to also print image links for each result. Requires an API key.",
+    )
+    p_fav_list.add_argument("page", nargs="?", type=int, default=None, help="Page number (default: 1)")
+    p_fav_list.add_argument("-i", "--image-links", action="store_true", dest="image_links", help="Also print image links for each result")
+    p_fav_list.set_defaults(func=_do_fav_list)
 
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        self.close()
+    p_login = sub.add_parser(
+        "login",
+        help="Save an API key",
+        description="Store an nhentai API key locally so it is used automatically by API commands.",
+    )
+    p_login.add_argument("api_key", help="API key (starts with nhk_)")
+    p_login.set_defaults(func=lambda a, k: (set_api_key(a.api_key), print("API key saved.")))
+
+    p_logout = sub.add_parser(
+        "logout",
+        help="Remove the saved API key",
+        description="Delete the locally stored API key.",
+    )
+    p_logout.set_defaults(func=lambda a, k: print("API key removed." if delete_api_key() else "No API key stored."))
+
+    args = parser.parse_args()
+    if not args.command:
+        parser.print_help()
+        sys.exit(1)
+    if args.command == "fav" and not getattr(args, "fav_cmd", None):
+        p_fav.print_help()
+        sys.exit(1)
+    api_key = get_api_key()
+    try:
+        args.func(args, api_key)
+    except Exception as e:
+        print("Error: {}".format(e), file=sys.stderr)
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
