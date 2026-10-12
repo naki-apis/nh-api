@@ -1,6 +1,6 @@
 import requests
 from datetime import datetime, timezone
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Union
 
 BASE_URL = "https://nhentai.net/api/v2/search"
 GALLERIES_URL = "https://nhentai.net/api/v2/galleries"
@@ -8,10 +8,12 @@ GALLERY_URL = "https://nhentai.net/api/v2/galleries/{id}"
 GALLERY_FAV_URL = "https://nhentai.net/api/v2/galleries/{id}/favorite"
 FAVORITES_URL = "https://nhentai.net/api/v2/favorites"
 TAGS_SEARCH_URL = "https://nhentai.net/api/v2/tags/search"
+TAGS_IDS_URL = "https://nhentai.net/api/v2/tags/ids"
 BLACKLIST_URL = "https://nhentai.net/api/v2/blacklist"
 CDN_URL = "https://nhentai.net/api/v2/cdn"
 VALID_SORTS = {"date", "popular", "popular-today", "popular-week", "popular-month"}
 VALID_TAG_TYPES = {"artist", "category", "character", "group", "language", "parody", "tag"}
+MAX_TAGS_BY_IDS = 100
 
 
 def _format_date(ts: Optional[int]) -> Optional[str]:
@@ -150,6 +152,12 @@ class NHentaiClient:
         r.raise_for_status()
         return r.json()
 
+    def _raw_tags_by_ids(self, ids, api_key=None):
+        r = self.session.get(TAGS_IDS_URL, params={"ids": ",".join(str(i) for i in ids)},
+                             headers=self._headers_for(api_key), timeout=self.timeout)
+        r.raise_for_status()
+        return r.json()
+
     def _raw_blacklist_get(self, api_key=None):
         r = self.session.get(BLACKLIST_URL, headers=self._headers_for(api_key), timeout=self.timeout)
         r.raise_for_status()
@@ -239,6 +247,28 @@ class NHentaiClient:
         data = self._raw_tags_search(tag_type, query, limit, api_key=api_key)
         items = data if isinstance(data, list) else (data.get("result") or data.get("results") or [])
         return [{"id": t.get("id"), "name": t.get("name")} for t in items]
+
+    def tags_by_ids(self, ids, api_key=None):
+        if isinstance(ids, (int, str)):
+            ids = [ids]
+        ids = list(ids)
+        if not ids:
+            return []
+        if len(ids) > MAX_TAGS_BY_IDS:
+            raise ValueError(f"ids must contain at most {MAX_TAGS_BY_IDS} entries")
+        data = self._raw_tags_by_ids(ids, api_key=api_key)
+        items = data if isinstance(data, list) else (data.get("result") or data.get("results") or [])
+        return [
+            {
+                "id": t.get("id"),
+                "type": t.get("type"),
+                "name": t.get("name"),
+                "slug": t.get("slug"),
+                "url": t.get("url"),
+                "count": t.get("count"),
+            }
+            for t in items
+        ]
 
     def blacklist(self, api_key=None):
         data = self._raw_blacklist_get(api_key=api_key)
