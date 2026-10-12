@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "nh-api"
-version = "0.1.0"
+version = "1.0.0"
 description = "CLI client and library for the nhentai v2 API"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -33,6 +33,7 @@ Issues = "https://github.com/naki-apis/nh-api/issues"
 
 [project.scripts]
 nh-api = "nhentai.cli:main"
+nh = "nhentai.cli:main"
 
 [tool.setuptools]
 packages = ["nhentai"]
