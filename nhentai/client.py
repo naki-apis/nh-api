@@ -65,6 +65,7 @@ def _format_gallery_item(item, base_url):
         "num_pages": item.get("num_pages"),
         "num_favorites": item.get("num_favorites"),
         "blacklisted": item.get("blacklisted"),
+        "tag_ids": item.get("tag_ids") or [],
     }
 
 
