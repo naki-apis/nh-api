@@ -17,7 +17,7 @@ def _require_api(api_key):
         sys.exit(1)
 
 
-def _print_search_results(data, as_json, header=None, show_links=False, api_key=None):
+def _print_search_results(data, as_json, header=None, show_links=False):
     if as_json:
         print(json.dumps(data, indent=2, ensure_ascii=False))
         return
@@ -27,21 +27,13 @@ def _print_search_results(data, as_json, header=None, show_links=False, api_key=
         if i > 0:
             print()
         print("{} {}".format(r["id"], r["title"]))
+        if show_links:
+            thumb = r.get("thumbnail") or {}
+            url = thumb.get("url")
+            if url:
+                print("    " + url)
     print()
     print("Page: {} pages | Total: {} results".format(data.get("num_pages"), data.get("total")))
-    if show_links:
-        print()
-        print("Image links:")
-        for r in data["results"]:
-            print()
-            print("{} {}".format(r["id"], r["title"]))
-            try:
-                with NHentaiClient() as c:
-                    g = c.gallery(r["id"], api_key=api_key)
-                for p in g["pages"]:
-                    print(p["image"]["url"])
-            except Exception as e:
-                print("  error: {}".format(e))
 
 
 def _print_gallery(data, as_json, show_links=False):
@@ -69,6 +61,10 @@ def _print_gallery(data, as_json, show_links=False):
         names = ", ".join("{}({})".format(t["name"], t["id"]) for t in items)
         print("  {}: {}".format(ttype, names))
     if show_links:
+        thumb = data.get("thumbnail") or {}
+        if thumb.get("url"):
+            print()
+            print("Thumb: {}".format(thumb["url"]))
         print()
         print("Image links:")
         for pg in data["pages"]:
@@ -80,7 +76,7 @@ def _do_search(args, api_key):
     page = args.page if args.page is not None else 1
     with NHentaiClient() as client:
         data = client.search(query, sort="date", page=page, api_key=api_key)
-    _print_search_results(data, args.json, show_links=args.image_links, api_key=api_key)
+    _print_search_results(data, args.json, show_links=args.image_links)
 
 
 def _do_gallery(args, api_key):
@@ -137,7 +133,7 @@ def _do_fav_list(args, api_key):
     page = args.page if args.page is not None else 1
     with NHentaiClient() as client:
         data = client.fav_list(page=page, api_key=api_key)
-    _print_search_results(data, args.json, header="Favorites (page {})".format(page), show_links=args.image_links, api_key=api_key)
+    _print_search_results(data, args.json, header="Favorites (page {})".format(page), show_links=args.image_links)
 
 
 def _swap_cdn(url, image_servers, attempt):
@@ -254,9 +250,10 @@ def _write_raw(output_dir, results):
             f.write(results[num])
 
 
-def _write_pdf(output, results):
+def _write_pdf(output, results, title=None, authors=None, subject=None, keywords=None, upload_date=None):
     from PIL import Image
     import io as _io
+    from datetime import datetime, timezone
     images = []
     for num in sorted(results.keys()):
         data = results[num]
@@ -269,15 +266,47 @@ def _write_pdf(output, results):
             continue
     if not images:
         raise RuntimeError("No valid images to build the PDF")
+    meta = {}
+    if title:
+        meta["title"] = title
+    if authors:
+        meta["author"] = ", ".join(authors)
+    if subject:
+        meta["subject"] = subject
+    if keywords:
+        meta["keywords"] = keywords
+    if upload_date:
+        try:
+            dt = datetime.strptime(upload_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+            meta["creationDate"] = dt.strftime("D:%Y%m%d")
+            meta["modDate"] = dt.strftime("D:%Y%m%d")
+        except Exception:
+            pass
     first, rest = images[0], images[1:]
-    first.save(output, "PDF", save_all=True, append_images=rest)
+    first.save(output, "PDF", save_all=True, append_images=rest, **meta)
 
 
 def _download_one(client, gallery_id, output_dir, fmt="cbz"):
     gallery = client.gallery(gallery_id)
     gid = gallery["id"]
-    title = gallery["title"] or "gallery_{}".format(gid)
+    titles = gallery.get("titles") or {}
+    title = titles.get("pretty") or titles.get("english") or titles.get("japanese") or gallery.get("title") or "gallery_{}".format(gid)
     base = _build_output_base(output_dir, gid, title, gallery.get("tags"))
+    tags = gallery.get("tags") or {}
+    authors = [t.get("name") for t in tags.get("artist", []) if t.get("name")]
+    subject_tags = []
+    keyword_tags = []
+    for ttype, items in tags.items():
+        for t in items:
+            name = t.get("name")
+            if not name:
+                continue
+            if ttype == "tag":
+                keyword_tags.append(name)
+            if ttype in ("category", "group", "parody", "character", "language"):
+                subject_tags.append(name)
+    subject = ", ".join(subject_tags) if subject_tags else None
+    keywords = ", ".join(keyword_tags) if keyword_tags else None
     pages = gallery["pages"]
     image_servers = gallery.get("_image_servers") or ["https://i1.nhentai.net", "https://i2.nhentai.net", "https://i3.nhentai.net", "https://i4.nhentai.net"]
     total = len(pages)
@@ -292,7 +321,14 @@ def _download_one(client, gallery_id, output_dir, fmt="cbz"):
         print("[+] Saved: {}/  ({}/{} images)".format(base, len(results), total))
     elif fmt == "pdf":
         output = base + ".pdf"
-        _write_pdf(output, results)
+        _write_pdf(
+            output, results,
+            title=title,
+            authors=authors,
+            subject=subject,
+            keywords=keywords,
+            upload_date=gallery.get("upload_date"),
+        )
         print("[+] Saved: {}  ({}/{} images)".format(output, len(results), total))
     elif fmt == "zip":
         output = base + ".zip"
@@ -353,20 +389,20 @@ def main():
     p_search = sub.add_parser(
         "search",
         help="Search galleries by query",
-        description="Search nhentai using a query string. Optionally specify a page. Use -i to also print image links for each result.",
+        description="Search nhentai using a query string. Optionally specify a page. Use -i to also print the thumbnail of each result.",
     )
     p_search.add_argument("query", type=str, help="Search query (put it in quotes, e.g. \"language:english catgirl\")")
     p_search.add_argument("page", nargs="?", type=int, default=None, help="Page number (default: 1)")
-    p_search.add_argument("-i", "--image-links", action="store_true", dest="image_links", help="Also print image links for each result")
+    p_search.add_argument("-i", "--image-links", action="store_true", dest="image_links", help="Also print the thumbnail of each result")
     p_search.set_defaults(func=_do_search)
 
     p_code = sub.add_parser(
         "code",
         help="Show gallery info by ID",
-        description="Fetch and display info for a gallery by its numeric ID. Use -i to also print the image links, or -txt to save the links to a .txt file.",
+        description="Fetch and display info for a gallery by its numeric ID. Use -i to also print the thumbnail and the image links, or -txt to save the links to a .txt file.",
     )
     p_code.add_argument("gallery_id", type=int, help="Gallery numeric ID (e.g. 12345)")
-    p_code.add_argument("-i", "--image-links", action="store_true", dest="image_links", help="Also print the image links")
+    p_code.add_argument("-i", "--image-links", action="store_true", dest="image_links", help="Also print the thumbnail and the image links")
     p_code.add_argument("-txt", "--txt", action="store_true", dest="txt", help="Save the image links to a .txt file (same naming format as 'dl')")
     p_code.set_defaults(func=_do_gallery)
 
@@ -444,10 +480,10 @@ def main():
     p_fav_list = fav_sub.add_parser(
         "list",
         help="List your favorites",
-        description="List favorites page by page. Use -i to also print image links for each result. Requires an API key.",
+        description="List favorites page by page. Use -i to also print the thumbnail of each result. Requires an API key.",
     )
     p_fav_list.add_argument("page", nargs="?", type=int, default=None, help="Page number (default: 1)")
-    p_fav_list.add_argument("-i", "--image-links", action="store_true", dest="image_links", help="Also print image links for each result")
+    p_fav_list.add_argument("-i", "--image-links", action="store_true", dest="image_links", help="Also print the thumbnail of each result")
     p_fav_list.set_defaults(func=_do_fav_list)
 
     p_login = sub.add_parser(
