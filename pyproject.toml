@@ -27,9 +27,9 @@ classifiers = [
 dependencies = ["requests>=2.28"]
 
 [project.urls]
-Homepage = ""
-Repository = ""
-Issues = ""
+Homepage = "https://github.com/naki-apis/nh-api/blob/main/"
+Repository = "https://github.com/naki-apis/nh-api/blob/main/"
+Issues = "https://github.com/naki-apis/nh-api/issues"
 
 [project.scripts]
 nh-api = "nhentai.cli:main"
