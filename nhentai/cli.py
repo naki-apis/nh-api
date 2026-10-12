@@ -26,7 +26,7 @@ def _print_search_results(data, as_json, header=None, show_links=False, api_key=
     for i, r in enumerate(data["results"]):
         if i > 0:
             print()
-        print(r["title"])
+        print("{} {}".format(r["id"], r["title"]))
     print()
     print("Page: {} pages | Total: {} results".format(data.get("num_pages"), data.get("total")))
     if show_links:
@@ -34,7 +34,7 @@ def _print_search_results(data, as_json, header=None, show_links=False, api_key=
         print("Image links:")
         for r in data["results"]:
             print()
-            print(r["title"])
+            print("{} {}".format(r["id"], r["title"]))
             try:
                 with NHentaiClient() as c:
                     g = c.gallery(r["id"], api_key=api_key)
@@ -48,7 +48,7 @@ def _print_gallery(data, as_json, show_links=False):
     if as_json:
         print(json.dumps(data, indent=2, ensure_ascii=False))
         return
-    print(data["title"])
+    print("{} {}".format(data["id"], data["title"]))
     titles = data.get("titles") or {}
     if titles.get("english") and titles.get("english") != data["title"]:
         print("English: {}".format(titles["english"]))
