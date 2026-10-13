@@ -286,7 +286,9 @@ def _write_pdf(output, results, title=None, authors=None, subject=None, keywords
     first.save(output, "PDF", save_all=True, append_images=rest, **meta)
 
 
-def _download_one(client, gallery_id, output_dir, fmt="cbz"):
+def _download_one(client, gallery_id, output_dir, formats=None):
+    if formats is None:
+        formats = ["cbz"]
     gallery = client.gallery(gallery_id)
     gid = gallery["id"]
     titles = gallery.get("titles") or {}
@@ -312,51 +314,61 @@ def _download_one(client, gallery_id, output_dir, fmt="cbz"):
     total = len(pages)
     print("[*] [{}] {} ({} pages)".format(gid, title, total))
     results, failed = _download_all_pages(client, pages, image_servers)
-    if fmt == "cbz":
-        output = base + ".cbz"
-        _write_cbz(output, results)
-        print("[+] Saved: {}  ({}/{} images)".format(output, len(results), total))
-    elif fmt == "raw":
-        _write_raw(base, results)
-        print("[+] Saved: {}/  ({}/{} images)".format(base, len(results), total))
-    elif fmt == "pdf":
-        output = base + ".pdf"
-        _write_pdf(
-            output, results,
-            title=title,
-            authors=authors,
-            subject=subject,
-            keywords=keywords,
-            upload_date=gallery.get("upload_date"),
-        )
-        print("[+] Saved: {}  ({}/{} images)".format(output, len(results), total))
-    elif fmt == "zip":
-        output = base + ".zip"
-        _write_cbz(output, results)
-        print("[+] Saved: {}  ({}/{} images)".format(output, len(results), total))
+    for fmt in formats:
+        if fmt == "cbz":
+            output = base + ".cbz"
+            _write_cbz(output, results)
+            print("[+] Saved: {}  ({}/{} images)".format(output, len(results), total))
+        elif fmt == "raw":
+            _write_raw(base, results)
+            print("[+] Saved: {}/  ({}/{} images)".format(base, len(results), total))
+        elif fmt == "pdf":
+            output = base + ".pdf"
+            _write_pdf(
+                output, results,
+                title=title,
+                authors=authors,
+                subject=subject,
+                keywords=keywords,
+                upload_date=gallery.get("upload_date"),
+            )
+            print("[+] Saved: {}  ({}/{} images)".format(output, len(results), total))
+        elif fmt == "zip":
+            output = base + ".zip"
+            _write_cbz(output, results)
+            print("[+] Saved: {}  ({}/{} images)".format(output, len(results), total))
     if failed:
         print("[!] Failed {} pages: {}".format(len(failed), ", ".join(str(n) for n, _ in failed)))
     return base, len(results), len(failed)
+
+
+def _resolve_formats(args):
+    requested = []
+    if args.raw:
+        requested.append("raw")
+    if args.pdf:
+        requested.append("pdf")
+    if args.zip:
+        requested.append("zip")
+    if args.cbz:
+        requested.append("cbz")
+    if not requested:
+        return ["cbz"]
+    return requested
 
 
 def _do_download(args, api_key):
     ids = _parse_ids(args.gallery_id)
     output_dir = args.output or "."
     os.makedirs(output_dir, exist_ok=True)
-    fmt = "cbz"
-    if args.raw:
-        fmt = "raw"
-    elif args.pdf:
-        fmt = "pdf"
-    elif args.zip:
-        fmt = "zip"
-    if fmt == "pdf" and not _check_pillow():
+    formats = _resolve_formats(args)
+    if "pdf" in formats and not _check_pillow():
         print("Error: Pillow is required for PDF output. Install it with: pip install Pillow", file=sys.stderr)
         sys.exit(1)
     with NHentaiClient() as client:
         for gid in ids:
             try:
-                _download_one(client, gid, output_dir, fmt=fmt)
+                _download_one(client, gid, output_dir, formats=formats)
             except Exception as e:
                 print("[!] Error with {}: {}".format(gid, e), file=sys.stderr)
 
@@ -376,7 +388,8 @@ def main():
                "  nh-api dl 12345\n"
                "  nh-api dl 12345 --raw\n"
                "  nh-api dl 12345 --pdf\n"
-               "  nh-api dl 12345 --zip\n"
+               "  nh-api dl 12345 --raw --pdf\n"
+               "  nh-api dl 12345 --pdf --cbz\n"
                "  nh-api dl 1,2,3 -o ~/Downloads\n"
                "  nh-api fav add 12345\n"
                "  nh-api fav list\n"
@@ -433,13 +446,14 @@ def main():
     p_dl = sub.add_parser(
         "download",
         help="Download galleries (no API key required)",
-        description="Download one or more galleries. Default output is .cbz. Use --raw to save individual images into a folder, --pdf to build a PDF (requires Pillow), or --zip to save a zip archive. Accepts a single ID, a comma-separated list, or space-separated IDs.",
+        description="Download one or more galleries. Default output is .cbz. You can combine any of --raw, --pdf, --zip and --cbz to produce multiple outputs from a single download. If any format flag is used, --cbz is no longer implicit unless you also pass --cbz explicitly. Accepts a single ID, a comma-separated list, or space-separated IDs.",
     )
     p_dl.add_argument("gallery_id", nargs="+", help="One or more gallery IDs (e.g. 12345 or 1,2,3 or 1 2 3)")
     p_dl.add_argument("-o", "--output", default=None, help="Output directory (default: current directory)")
     p_dl.add_argument("--raw", action="store_true", help="Save individual images into a folder instead of a CBZ")
     p_dl.add_argument("--pdf", action="store_true", help="Build a PDF using Pillow (must be installed)")
-    p_dl.add_argument("--zip", action="store_true", help="Save a ZIP archive instead of a CBZ")
+    p_dl.add_argument("--zip", action="store_true", help="Save a ZIP archive")
+    p_dl.add_argument("--cbz", action="store_true", help="Save a CBZ archive (default if no other format is used)")
     p_dl.set_defaults(func=_do_download)
 
     p_dl2 = sub.add_parser(
@@ -451,7 +465,8 @@ def main():
     p_dl2.add_argument("-o", "--output", default=None, help="Output directory (default: current directory)")
     p_dl2.add_argument("--raw", action="store_true", help="Save individual images into a folder instead of a CBZ")
     p_dl2.add_argument("--pdf", action="store_true", help="Build a PDF using Pillow (must be installed)")
-    p_dl2.add_argument("--zip", action="store_true", help="Save a ZIP archive instead of a CBZ")
+    p_dl2.add_argument("--zip", action="store_true", help="Save a ZIP archive")
+    p_dl2.add_argument("--cbz", action="store_true", help="Save a CBZ archive (default if no other format is used)")
     p_dl2.set_defaults(func=_do_download)
 
     p_fav = sub.add_parser(
