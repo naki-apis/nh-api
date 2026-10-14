@@ -13,7 +13,7 @@ from .config import get_api_key, set_api_key, delete_api_key
 
 def _require_api(api_key):
     if not api_key:
-        print("Error: API key required. Use nh-api login nhk_... first.", file=sys.stderr)
+        print("Error: API key required. Use nh-api login nhk_... first, or pass --api <key>.", file=sys.stderr)
         sys.exit(1)
 
 
@@ -26,7 +26,7 @@ def _print_search_results(data, as_json, header=None, show_links=False):
     for i, r in enumerate(data["results"]):
         if i > 0:
             print()
-        print("{} {}".format(r["id"], r["title"]))
+        print("{} {} ({}p)".format(r["id"], r["title"], r.get("num_pages", "?")))
         if show_links:
             thumb = r.get("thumbnail") or {}
             url = thumb.get("url")
@@ -72,16 +72,21 @@ def _print_gallery(data, as_json, show_links=False):
 
 
 def _do_search(args, api_key):
-    query = args.query
+    query = " ".join(args.query).strip()
+    if not query:
+        print("Error: empty query.", file=sys.stderr)
+        sys.exit(1)
     page = args.page if args.page is not None else 1
+    key = None if args.anon else (args.api or api_key)
     with NHentaiClient() as client:
-        data = client.search(query, sort="date", page=page, api_key=api_key)
+        data = client.search(query, sort="date", page=page, api_key=key)
     _print_search_results(data, args.json, show_links=args.image_links)
 
 
 def _do_gallery(args, api_key):
+    key = args.api or api_key
     with NHentaiClient() as client:
-        data = client.gallery(args.gallery_id, api_key=api_key)
+        data = client.gallery(args.gallery_id, api_key=key)
     if args.txt:
         base = _build_output_base(".", data["id"], data["title"] or "gallery_{}".format(data["id"]), data.get("tags"))
         out = base + ".txt"
@@ -94,45 +99,51 @@ def _do_gallery(args, api_key):
 
 
 def _do_zip(args, api_key):
-    _require_api(api_key)
+    key = args.api or api_key
+    _require_api(key)
     with NHentaiClient() as client:
-        info = client.get_download_url(args.gallery_id, "zip", api_key=api_key)
+        info = client.get_download_url(args.gallery_id, "zip", api_key=key)
     print(json.dumps(info, indent=2, ensure_ascii=False))
 
 
 def _do_cbz(args, api_key):
-    _require_api(api_key)
+    key = args.api or api_key
+    _require_api(key)
     with NHentaiClient() as client:
-        info = client.get_download_url(args.gallery_id, "cbz", api_key=api_key)
+        info = client.get_download_url(args.gallery_id, "cbz", api_key=key)
     print(json.dumps(info, indent=2, ensure_ascii=False))
 
 
 def _do_torrent(args, api_key):
-    _require_api(api_key)
+    key = args.api or api_key
+    _require_api(key)
     with NHentaiClient() as client:
-        info = client.get_download_url(args.gallery_id, "torrent", api_key=api_key)
+        info = client.get_download_url(args.gallery_id, "torrent", api_key=key)
     print(json.dumps(info, indent=2, ensure_ascii=False))
 
 
 def _do_fav_add(args, api_key):
-    _require_api(api_key)
+    key = args.api or api_key
+    _require_api(key)
     with NHentaiClient() as client:
-        client.fav_add(args.gallery_id, api_key=api_key)
+        client.fav_add(args.gallery_id, api_key=key)
     print("Favorited: {}".format(args.gallery_id))
 
 
 def _do_fav_rm(args, api_key):
-    _require_api(api_key)
+    key = args.api or api_key
+    _require_api(key)
     with NHentaiClient() as client:
-        client.fav_rm(args.gallery_id, api_key=api_key)
+        client.fav_rm(args.gallery_id, api_key=key)
     print("Unfavorited: {}".format(args.gallery_id))
 
 
 def _do_fav_list(args, api_key):
-    _require_api(api_key)
+    key = args.api or api_key
+    _require_api(key)
     page = args.page if args.page is not None else 1
     with NHentaiClient() as client:
-        data = client.fav_list(page=page, api_key=api_key)
+        data = client.fav_list(page=page, api_key=key)
     _print_search_results(data, args.json, header="Favorites (page {})".format(page), show_links=args.image_links)
 
 
@@ -379,9 +390,12 @@ def main():
         description="CLI client for the nhentai v2 API. Search, view galleries, manage favorites and download CBZ/PDF/RAW files.",
         epilog="Examples:\n"
                "  nh-api login nhk_xxxxxxxx\n"
+               "  nh-api search language:english catgirl\n"
                "  nh-api search \"language:english catgirl\"\n"
-               "  nh-api search \"catgirl\" 2\n"
-               "  nh-api search \"catgirl\" -i\n"
+               "  nh-api search catgirl -p 2\n"
+               "  nh-api search catgirl -i\n"
+               "  nh-api search catgirl --anon\n"
+               "  nh-api search catgirl --api nhk_xxxxxxxx\n"
                "  nh-api code 12345\n"
                "  nh-api code 12345 -i\n"
                "  nh-api code 12345 -txt\n"
@@ -402,11 +416,13 @@ def main():
     p_search = sub.add_parser(
         "search",
         help="Search galleries by query",
-        description="Search nhentai using a query string. Optionally specify a page. Use -i to also print the thumbnail of each result.",
+        description="Search nhentai using one or more query terms (no quotes required). Use -p to select the page of results. Use -i to also print the thumbnail of each result.",
     )
-    p_search.add_argument("query", type=str, help="Search query (put it in quotes, e.g. \"language:english catgirl\")")
-    p_search.add_argument("page", nargs="?", type=int, default=None, help="Page number (default: 1)")
+    p_search.add_argument("query", nargs="+", help="One or more search terms (no quotes needed)")
+    p_search.add_argument("-p", "--page", type=int, default=None, help="Page of results (default: 1)")
     p_search.add_argument("-i", "--image-links", action="store_true", dest="image_links", help="Also print the thumbnail of each result")
+    p_search.add_argument("--anon", action="store_true", help="Ignore the saved API key and run the search anonymously")
+    p_search.add_argument("--api", default=None, help="API key to use for this call only")
     p_search.set_defaults(func=_do_search)
 
     p_code = sub.add_parser(
@@ -417,30 +433,34 @@ def main():
     p_code.add_argument("gallery_id", type=int, help="Gallery numeric ID (e.g. 12345)")
     p_code.add_argument("-i", "--image-links", action="store_true", dest="image_links", help="Also print the thumbnail and the image links")
     p_code.add_argument("-txt", "--txt", action="store_true", dest="txt", help="Save the image links to a .txt file (same naming format as 'dl')")
+    p_code.add_argument("--api", default=None, help="API key to use for this call only")
     p_code.set_defaults(func=_do_gallery)
 
     p_zip = sub.add_parser(
         "zip",
         help="Get a ZIP download URL (requires API key)",
-        description="Ask the API for a temporary ZIP download URL. Requires an API key saved with 'nh-api login'.",
+        description="Ask the API for a temporary ZIP download URL. Requires an API key saved with 'nh-api login' or passed with --api.",
     )
     p_zip.add_argument("gallery_id", type=int, help="Gallery numeric ID")
+    p_zip.add_argument("--api", default=None, help="API key to use for this call only")
     p_zip.set_defaults(func=_do_zip)
 
     p_cbz = sub.add_parser(
         "cbz",
         help="Get a CBZ download URL (requires API key)",
-        description="Ask the API for a temporary CBZ download URL. Requires an API key saved with 'nh-api login'.",
+        description="Ask the API for a temporary CBZ download URL. Requires an API key saved with 'nh-api login' or passed with --api.",
     )
     p_cbz.add_argument("gallery_id", type=int, help="Gallery numeric ID")
+    p_cbz.add_argument("--api", default=None, help="API key to use for this call only")
     p_cbz.set_defaults(func=_do_cbz)
 
     p_torrent = sub.add_parser(
         "torrent",
         help="Get a torrent download URL (requires API key)",
-        description="Ask the API for a temporary torrent URL. Requires an API key saved with 'nh-api login'.",
+        description="Ask the API for a temporary torrent URL. Requires an API key saved with 'nh-api login' or passed with --api.",
     )
     p_torrent.add_argument("gallery_id", type=int, help="Gallery numeric ID")
+    p_torrent.add_argument("--api", default=None, help="API key to use for this call only")
     p_torrent.set_defaults(func=_do_torrent)
 
     p_dl = sub.add_parser(
@@ -458,38 +478,40 @@ def main():
 
     p_dl2 = sub.add_parser(
         "dl",
-        help="Alias of 'download'",
-        description="Alias of the 'download' command. Same behavior and options.",
+        help=argparse.SUPPRESS,
+        description=argparse.SUPPRESS,
     )
-    p_dl2.add_argument("gallery_id", nargs="+", help="One or more gallery IDs")
-    p_dl2.add_argument("-o", "--output", default=None, help="Output directory (default: current directory)")
-    p_dl2.add_argument("--raw", action="store_true", help="Save individual images into a folder instead of a CBZ")
-    p_dl2.add_argument("--pdf", action="store_true", help="Build a PDF using Pillow (must be installed)")
-    p_dl2.add_argument("--zip", action="store_true", help="Save a ZIP archive")
-    p_dl2.add_argument("--cbz", action="store_true", help="Save a CBZ archive (default if no other format is used)")
+    p_dl2.add_argument("gallery_id", nargs="+", help=argparse.SUPPRESS)
+    p_dl2.add_argument("-o", "--output", default=None, help=argparse.SUPPRESS)
+    p_dl2.add_argument("--raw", action="store_true", help=argparse.SUPPRESS)
+    p_dl2.add_argument("--pdf", action="store_true", help=argparse.SUPPRESS)
+    p_dl2.add_argument("--zip", action="store_true", help=argparse.SUPPRESS)
+    p_dl2.add_argument("--cbz", action="store_true", help=argparse.SUPPRESS)
     p_dl2.set_defaults(func=_do_download)
 
     p_fav = sub.add_parser(
         "fav",
         help="Manage favorites (requires API key)",
-        description="Add, remove or list favorites. Requires an API key saved with 'nh-api login'.",
+        description="Add, remove or list favorites. Requires an API key saved with 'nh-api login' or passed with --api.",
     )
     fav_sub = p_fav.add_subparsers(dest="fav_cmd", metavar="<subcommand>")
 
     p_fav_add = fav_sub.add_parser(
         "add",
         help="Add a gallery to favorites",
-        description="Mark a gallery as favorite. Requires an API key saved with 'nh-api login'.",
+        description="Mark a gallery as favorite. Requires an API key saved with 'nh-api login' or passed with --api.",
     )
     p_fav_add.add_argument("gallery_id", type=int, help="Gallery numeric ID")
+    p_fav_add.add_argument("--api", default=None, help="API key to use for this call only")
     p_fav_add.set_defaults(func=_do_fav_add)
 
     p_fav_rm = fav_sub.add_parser(
         "rm",
         help="Remove a gallery from favorites",
-        description="Remove a gallery from your favorites. Requires an API key saved with 'nh-api login'.",
+        description="Remove a gallery from your favorites. Requires an API key saved with 'nh-api login' or passed with --api.",
     )
     p_fav_rm.add_argument("gallery_id", type=int, help="Gallery numeric ID")
+    p_fav_rm.add_argument("--api", default=None, help="API key to use for this call only")
     p_fav_rm.set_defaults(func=_do_fav_rm)
 
     p_fav_list = fav_sub.add_parser(
@@ -499,6 +521,7 @@ def main():
     )
     p_fav_list.add_argument("page", nargs="?", type=int, default=None, help="Page number (default: 1)")
     p_fav_list.add_argument("-i", "--image-links", action="store_true", dest="image_links", help="Also print the thumbnail of each result")
+    p_fav_list.add_argument("--api", default=None, help="API key to use for this call only")
     p_fav_list.set_defaults(func=_do_fav_list)
 
     p_login = sub.add_parser(
