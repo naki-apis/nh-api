@@ -415,6 +415,7 @@ def main():
 
     p_search = sub.add_parser(
         "search",
+        aliases=["s"],
         help="Search galleries by query",
         description="Search nhentai using one or more query terms (no quotes required). Use -p to select the page of results. Use -i to also print the thumbnail of each result.",
     )
@@ -427,6 +428,7 @@ def main():
 
     p_code = sub.add_parser(
         "code",
+        aliases=["g"],
         help="Show gallery info by ID",
         description="Fetch and display info for a gallery by its numeric ID. Use -i to also print the thumbnail and the image links, or -txt to save the links to a .txt file.",
     )
@@ -438,6 +440,7 @@ def main():
 
     p_zip = sub.add_parser(
         "zip",
+        aliases=["z"],
         help="Get a ZIP download URL (requires API key)",
         description="Ask the API for a temporary ZIP download URL. Requires an API key saved with 'nh-api login' or passed with --api.",
     )
@@ -447,6 +450,7 @@ def main():
 
     p_cbz = sub.add_parser(
         "cbz",
+        aliases=["c"],
         help="Get a CBZ download URL (requires API key)",
         description="Ask the API for a temporary CBZ download URL. Requires an API key saved with 'nh-api login' or passed with --api.",
     )
@@ -456,6 +460,7 @@ def main():
 
     p_torrent = sub.add_parser(
         "torrent",
+        aliases=["t"],
         help="Get a torrent download URL (requires API key)",
         description="Ask the API for a temporary torrent URL. Requires an API key saved with 'nh-api login' or passed with --api.",
     )
@@ -479,6 +484,7 @@ def main():
 
     p_fav = sub.add_parser(
         "fav",
+        aliases=["f"],
         help="Manage favorites (requires API key)",
         description="Add, remove or list favorites. Requires an API key saved with 'nh-api login' or passed with --api.",
     )
@@ -486,6 +492,7 @@ def main():
 
     p_fav_add = fav_sub.add_parser(
         "add",
+        aliases=["a"],
         help="Add a gallery to favorites",
         description="Mark a gallery as favorite. Requires an API key saved with 'nh-api login' or passed with --api.",
     )
@@ -495,6 +502,7 @@ def main():
 
     p_fav_rm = fav_sub.add_parser(
         "rm",
+        aliases=["r"],
         help="Remove a gallery from favorites",
         description="Remove a gallery from your favorites. Requires an API key saved with 'nh-api login' or passed with --api.",
     )
@@ -504,6 +512,7 @@ def main():
 
     p_fav_list = fav_sub.add_parser(
         "list",
+        aliases=["l"],
         help="List your favorites",
         description="List favorites page by page. Use -i to also print the thumbnail of each result. Requires an API key.",
     )
@@ -522,6 +531,7 @@ def main():
 
     p_logout = sub.add_parser(
         "logout",
+        
         help="Remove the saved API key",
         description="Delete the locally stored API key.",
     )
