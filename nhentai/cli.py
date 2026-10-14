@@ -465,6 +465,7 @@ def main():
 
     p_dl = sub.add_parser(
         "download",
+        aliases=["dl"],
         help="Download galleries (no API key required)",
         description="Download one or more galleries. Default output is .cbz. You can combine any of --raw, --pdf, --zip and --cbz to produce multiple outputs from a single download. If any format flag is used, --cbz is no longer implicit unless you also pass --cbz explicitly. Accepts a single ID, a comma-separated list, or space-separated IDs.",
     )
@@ -475,19 +476,6 @@ def main():
     p_dl.add_argument("--zip", action="store_true", help="Save a ZIP archive")
     p_dl.add_argument("--cbz", action="store_true", help="Save a CBZ archive (default if no other format is used)")
     p_dl.set_defaults(func=_do_download)
-
-    p_dl2 = sub.add_parser(
-        "dl",
-        help=argparse.SUPPRESS,
-        description=argparse.SUPPRESS,
-    )
-    p_dl2.add_argument("gallery_id", nargs="+", help=argparse.SUPPRESS)
-    p_dl2.add_argument("-o", "--output", default=None, help=argparse.SUPPRESS)
-    p_dl2.add_argument("--raw", action="store_true", help=argparse.SUPPRESS)
-    p_dl2.add_argument("--pdf", action="store_true", help=argparse.SUPPRESS)
-    p_dl2.add_argument("--zip", action="store_true", help=argparse.SUPPRESS)
-    p_dl2.add_argument("--cbz", action="store_true", help=argparse.SUPPRESS)
-    p_dl2.set_defaults(func=_do_download)
 
     p_fav = sub.add_parser(
         "fav",
