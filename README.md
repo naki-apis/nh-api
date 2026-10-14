@@ -4,11 +4,11 @@ CLI client and Python library for the nhentai v2 API.
 
 ## Install
 
-    pip install git+https://github.com/YOUR_USER/nh-api.git
+    pip install git+https://github.com/naki-apis/nh-api.git
 
 Or from a local clone:
 
-    git clone https://github.com/YOUR_USER/nh-api.git
+    git clone https://github.com/naki-apis/nh-api.git
     cd nh-api
     pip install -e .
 
