@@ -329,7 +329,17 @@ class _DownloadQueue:
         sys.stdout.flush()
 
 
-def _download_one(client, gallery_id, output_dir, formats, queue):
+def _save_keepthumb(base, results):
+    if 1 in results:
+        path = base + ".jpg"
+        with open(path, "wb") as f:
+            f.write(results[1])
+        print("\n[+] Thumb saved: {}".format(path))
+    else:
+        print("\n[!] -KT: page 001 not downloaded, no thumb saved.", file=sys.stderr)
+
+
+def _download_one(client, gallery_id, output_dir, formats, queue, keepthumb=False):
     gallery = client.gallery(gallery_id)
     gid = gallery["id"]
     titles = gallery.get("titles") or {}
@@ -397,6 +407,8 @@ def _download_one(client, gallery_id, output_dir, formats, queue):
             output = base + ".zip"
             _write_cbz(output, results)
             print("\n[+] Saved: {}  ({}/{} images)".format(output, len(results), len(pages)))
+    if keepthumb:
+        _save_keepthumb(base, results)
 
 
 def _do_download(args, api_key):
@@ -411,7 +423,7 @@ def _do_download(args, api_key):
     with NHentaiClient() as client:
         for gid in ids:
             try:
-                _download_one(client, gid, output_dir, formats, queue)
+                _download_one(client, gid, output_dir, formats, queue, keepthumb=args.keepthumb)
             except Exception as e:
                 print("\n[!] Error with {}: {}".format(gid, e), file=sys.stderr)
 
@@ -513,6 +525,7 @@ def main():
     p_dl.add_argument("--pdf", action="store_true", help="Build a PDF using Pillow (must be installed)")
     p_dl.add_argument("--zip", action="store_true", help="Save a ZIP archive")
     p_dl.add_argument("--cbz", action="store_true", help="Save a CBZ archive (default if no other format is used)")
+    p_dl.add_argument("--keepthumb", "-KT", action="store_true", dest="keepthumb", help=argparse.SUPPRESS)
     p_dl.set_defaults(func=_do_download)
 
     p_fav = sub.add_parser(
