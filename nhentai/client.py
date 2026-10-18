@@ -1,6 +1,7 @@
 import requests
 import time
 import threading
+import atexit
 from datetime import datetime, timezone
 from typing import Optional, Dict, Any, List, Union
 from urllib.parse import urlparse
@@ -418,3 +419,83 @@ class NHentaiClient:
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.close()
+
+
+_default_client: Optional[NHentaiClient] = None
+_default_client_lock = threading.Lock()
+
+
+def _get_default_client() -> NHentaiClient:
+    global _default_client
+    if _default_client is None:
+        with _default_client_lock:
+            if _default_client is None:
+                _default_client = NHentaiClient()
+    return _default_client
+
+
+def set_api_key(api_key: Optional[str]) -> None:
+    global _default_client
+    with _default_client_lock:
+        if _default_client is not None:
+            _default_client.close()
+        _default_client = NHentaiClient(api_key=api_key)
+
+
+def close_client() -> None:
+    global _default_client
+    with _default_client_lock:
+        if _default_client is not None:
+            _default_client.close()
+            _default_client = None
+
+
+atexit.register(close_client)
+
+
+def search(query: str, sort: str = "date", page: int = 1, api_key: Optional[str] = None):
+    return _get_default_client().search(query, sort=sort, page=page, api_key=api_key)
+
+
+def galleries(page: int = 1, per_page: int = 25, sort: str = "date", api_key: Optional[str] = None):
+    return _get_default_client().galleries(page=page, per_page=per_page, sort=sort, api_key=api_key)
+
+
+def gallery(gallery_id, api_key: Optional[str] = None):
+    return _get_default_client().gallery(gallery_id, api_key=api_key)
+
+
+def get_download_url(gallery_id, fmt: str = "zip", api_key: Optional[str] = None):
+    return _get_default_client().get_download_url(gallery_id, fmt=fmt, api_key=api_key)
+
+
+def download_gallery(gallery_id, fmt: str = "zip", output_path: Optional[str] = None, api_key: Optional[str] = None):
+    return _get_default_client().download_gallery(gallery_id, fmt=fmt, output_path=output_path, api_key=api_key)
+
+
+def fav_add(gallery_id, api_key: Optional[str] = None):
+    return _get_default_client().fav_add(gallery_id, api_key=api_key)
+
+
+def fav_rm(gallery_id, api_key: Optional[str] = None):
+    return _get_default_client().fav_rm(gallery_id, api_key=api_key)
+
+
+def fav_list(page: int = 1, api_key: Optional[str] = None):
+    return _get_default_client().fav_list(page=page, api_key=api_key)
+
+
+def tags_search(tag_type: str, query: str, limit: int = 50, api_key: Optional[str] = None):
+    return _get_default_client().tags_search(tag_type, query, limit=limit, api_key=api_key)
+
+
+def tags_by_ids(ids, api_key: Optional[str] = None):
+    return _get_default_client().tags_by_ids(ids, api_key=api_key)
+
+
+def blacklist(api_key: Optional[str] = None):
+    return _get_default_client().blacklist(api_key=api_key)
+
+
+def blacklist_update(added=None, removed=None, api_key: Optional[str] = None):
+    return _get_default_client().blacklist_update(added=added, removed=removed, api_key=api_key)
