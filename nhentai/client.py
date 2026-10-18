@@ -1,6 +1,9 @@
 import requests
+import time
+import threading
 from datetime import datetime, timezone
 from typing import Optional, Dict, Any, List, Union
+from urllib.parse import urlparse
 
 BASE_URL = "https://nhentai.net/api/v2/search"
 GALLERIES_URL = "https://nhentai.net/api/v2/galleries"
@@ -14,6 +17,74 @@ CDN_URL = "https://nhentai.net/api/v2/cdn"
 VALID_SORTS = {"date", "popular", "popular-today", "popular-week", "popular-month"}
 VALID_TAG_TYPES = {"artist", "category", "character", "group", "language", "parody", "tag"}
 MAX_TAGS_BY_IDS = 100
+
+RATE_LIMITS = {
+    "galleries": {"anon": (15, 60), "api": (30, 60)},
+    "gallery": {"anon": (20, 60), "api": (40, 60)},
+    "favorite": {"anon": (15, 60), "api": (15, 60)},
+    "tags_ids": {"anon": (15, 60), "api": (15, 60)},
+    "tags_search": {"anon": (30, 60), "api": (30, 60)},
+    "search": {"anon": (10, 60), "api": (20, 60)},
+    "blacklist": {"anon": (15, 60), "api": (15, 60)},
+    "favorites": {"anon": (15, 60), "api": (15, 60)},
+}
+
+
+class RateLimiter:
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._buckets = {}
+
+    def _key_for(self, url, api_key):
+        parsed = urlparse(url)
+        host = parsed.netloc
+        path = parsed.path
+        endpoint = "default"
+        for name, prefix in [
+            ("galleries", "/api/v2/galleries"),
+            ("gallery", "/api/v2/galleries/"),
+            ("favorite", "/favorite"),
+            ("tags_ids", "/api/v2/tags/ids"),
+            ("tags_search", "/api/v2/tags/search"),
+            ("search", "/api/v2/search"),
+            ("blacklist", "/api/v2/blacklist"),
+            ("favorites", "/api/v2/favorites"),
+        ]:
+            if path.startswith(prefix) or prefix in path:
+                endpoint = name
+                break
+        mode = "api" if api_key else "anon"
+        return (host, endpoint, mode)
+
+    def wait(self, url, api_key=None):
+        key = self._key_for(url, api_key)
+        host, endpoint, mode = key
+        limits = RATE_LIMITS.get(endpoint, {"anon": (30, 60), "api": (30, 60)})
+        count, window = limits.get(mode, (30, 60))
+        interval = window / max(count, 1)
+        with self._lock:
+            now = time.monotonic()
+            next_allowed = self._buckets.get(key, 0.0)
+            if now < next_allowed:
+                sleep_time = next_allowed - now
+                time.sleep(sleep_time)
+                now = time.monotonic()
+            self._buckets[key] = now + interval
+
+    def wait_host(self, url):
+        parsed = urlparse(url)
+        host = parsed.netloc
+        key = (host, "cdn", "any")
+        with self._lock:
+            now = time.monotonic()
+            next_allowed = self._buckets.get(key, 0.0)
+            if now < next_allowed:
+                time.sleep(next_allowed - now)
+                now = time.monotonic()
+            self._buckets[key] = now + 0.05
+
+
+_rate_limiter = RateLimiter()
 
 
 def _format_date(ts: Optional[int]) -> Optional[str]:
@@ -78,97 +149,122 @@ class NHentaiClient:
         if self.api_key:
             headers["Authorization"] = f"Key {self.api_key}"
         self.session.headers.update(headers)
+        self._cdn_cache = None
 
     def _headers_for(self, api_key):
         if api_key is None or api_key == self.api_key:
             return None
         return {"Authorization": f"Key {api_key}"}
 
+    def _request(self, method, url, api_key=None, **kwargs):
+        headers = kwargs.pop("headers", None)
+        extra = self._headers_for(api_key)
+        if extra:
+            headers = dict(headers or {})
+            headers.update(extra)
+        kwargs.setdefault("timeout", self.timeout)
+        while True:
+            _rate_limiter.wait(url, api_key)
+            try:
+                r = self.session.request(method, url, headers=headers, **kwargs)
+                if r.status_code == 443:
+                    time.sleep(61)
+                    continue
+                if r.status_code == 429:
+                    retry_after = r.headers.get("Retry-After")
+                    wait = int(retry_after) if retry_after and retry_after.isdigit() else 61
+                    time.sleep(wait)
+                    continue
+                if r.status_code == 503:
+                    time.sleep(61)
+                    continue
+                r.raise_for_status()
+                return r
+            except requests.exceptions.ConnectionError:
+                time.sleep(61)
+                continue
+            except requests.exceptions.Timeout:
+                time.sleep(61)
+                continue
+            except requests.exceptions.HTTPError:
+                raise
+
+    def _get(self, url, api_key=None, **kwargs):
+        return self._request("GET", url, api_key=api_key, **kwargs)
+
+    def _post(self, url, api_key=None, **kwargs):
+        return self._request("POST", url, api_key=api_key, **kwargs)
+
+    def _delete(self, url, api_key=None, **kwargs):
+        return self._request("DELETE", url, api_key=api_key, **kwargs)
+
     def _raw_search(self, query, sort, page, api_key=None):
-        r = self.session.get(BASE_URL, params={"query": query, "sort": sort, "page": page},
-                             headers=self._headers_for(api_key), timeout=self.timeout)
-        r.raise_for_status()
+        r = self._get(BASE_URL, api_key=api_key, params={"query": query, "sort": sort, "page": page})
         return r.json()
 
     def _raw_galleries(self, page=1, per_page=25, sort=None, api_key=None):
         params = {"page": page, "per_page": per_page}
         if sort:
             params["sort"] = sort
-        r = self.session.get(GALLERIES_URL, params=params,
-                             headers=self._headers_for(api_key), timeout=self.timeout)
-        r.raise_for_status()
+        r = self._get(GALLERIES_URL, api_key=api_key, params=params)
         return r.json()
 
     def _raw_gallery(self, gallery_id, include=None, api_key=None):
         params = {}
         if include:
             params["include"] = include
-        r = self.session.get(GALLERY_URL.format(id=gallery_id), params=params or None,
-                             headers=self._headers_for(api_key), timeout=self.timeout)
-        r.raise_for_status()
+        r = self._get(GALLERY_URL.format(id=gallery_id), api_key=api_key, params=params or None)
         return r.json()
 
     def _get_cdn(self, api_key=None):
-        r = self.session.get(CDN_URL, headers=self._headers_for(api_key), timeout=self.timeout)
-        r.raise_for_status()
-        return r.json()
+        if self._cdn_cache is not None:
+            return self._cdn_cache
+        r = self._get(CDN_URL, api_key=api_key)
+        data = r.json()
+        self._cdn_cache = data
+        return data
 
     def _raw_download(self, gallery_id, fmt, api_key=None):
         url = f"https://nhentai.net/api/v2/galleries/{gallery_id}/download"
-        r = self.session.post(url, params={"format": fmt},
-                              headers=self._headers_for(api_key), timeout=self.timeout)
-        r.raise_for_status()
+        r = self._post(url, api_key=api_key, params={"format": fmt})
         return r.json()
 
     def _raw_fav_add(self, gallery_id, api_key=None):
-        r = self.session.post(GALLERY_FAV_URL.format(id=gallery_id),
-                              headers=self._headers_for(api_key), timeout=self.timeout)
-        r.raise_for_status()
+        r = self._post(GALLERY_FAV_URL.format(id=gallery_id), api_key=api_key)
         try:
             return r.json()
         except ValueError:
             return {}
 
     def _raw_fav_rm(self, gallery_id, api_key=None):
-        r = self.session.delete(GALLERY_FAV_URL.format(id=gallery_id),
-                                headers=self._headers_for(api_key), timeout=self.timeout)
-        r.raise_for_status()
+        r = self._delete(GALLERY_FAV_URL.format(id=gallery_id), api_key=api_key)
         try:
             return r.json()
         except ValueError:
             return {}
 
     def _raw_favorites(self, page=1, api_key=None):
-        r = self.session.get(FAVORITES_URL, params={"page": page},
-                             headers=self._headers_for(api_key), timeout=self.timeout)
-        r.raise_for_status()
+        r = self._get(FAVORITES_URL, api_key=api_key, params={"page": page})
         return r.json()
 
     def _raw_tags_search(self, tag_type, query, limit=50, api_key=None):
         if tag_type not in VALID_TAG_TYPES:
             raise ValueError("Invalid tag type. Must be one of: {}".format(", ".join(sorted(VALID_TAG_TYPES))))
         payload = {"type": tag_type, "query": query, "limit": limit}
-        r = self.session.post(TAGS_SEARCH_URL, json=payload,
-                              headers=self._headers_for(api_key), timeout=self.timeout)
-        r.raise_for_status()
+        r = self._post(TAGS_SEARCH_URL, api_key=api_key, json=payload)
         return r.json()
 
     def _raw_tags_by_ids(self, ids, api_key=None):
-        r = self.session.get(TAGS_IDS_URL, params={"ids": ",".join(str(i) for i in ids)},
-                             headers=self._headers_for(api_key), timeout=self.timeout)
-        r.raise_for_status()
+        r = self._get(TAGS_IDS_URL, api_key=api_key, params={"ids": ",".join(str(i) for i in ids)})
         return r.json()
 
     def _raw_blacklist_get(self, api_key=None):
-        r = self.session.get(BLACKLIST_URL, headers=self._headers_for(api_key), timeout=self.timeout)
-        r.raise_for_status()
+        r = self._get(BLACKLIST_URL, api_key=api_key)
         return r.json()
 
     def _raw_blacklist_update(self, added=None, removed=None, api_key=None):
         payload = {"added": added or [], "removed": removed or []}
-        r = self.session.post(BLACKLIST_URL, json=payload,
-                              headers=self._headers_for(api_key), timeout=self.timeout)
-        r.raise_for_status()
+        r = self._post(BLACKLIST_URL, api_key=api_key, json=payload)
         return r.json()
 
     def get_download_url(self, gallery_id, fmt="zip", api_key=None):
@@ -179,7 +275,7 @@ class NHentaiClient:
         info = self.get_download_url(gallery_id, fmt, api_key=api_key)
         if output_path is None:
             output_path = f"{gallery_id}.{fmt}"
-        r = self.session.get(info["url"], stream=True, timeout=self.timeout)
+        r = self._get(info["url"], api_key=api_key, stream=True)
         r.raise_for_status()
         with open(output_path, "wb") as f:
             for chunk in r.iter_content(chunk_size=8192):
