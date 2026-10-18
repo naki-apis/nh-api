@@ -152,20 +152,23 @@ class NHentaiClient:
         self.session.headers.update(headers)
         self._cdn_cache = None
 
-    def _headers_for(self, api_key):
+    def _headers_for(self, api_key, anon=False):
+        if anon:
+            return {"Authorization": None}
         if api_key is None or api_key == self.api_key:
             return None
         return {"Authorization": f"Key {api_key}"}
 
-    def _request(self, method, url, api_key=None, **kwargs):
+    def _request(self, method, url, api_key=None, anon=False, **kwargs):
         headers = kwargs.pop("headers", None)
-        extra = self._headers_for(api_key)
+        extra = self._headers_for(api_key, anon=anon)
         if extra:
             headers = dict(headers or {})
             headers.update(extra)
         kwargs.setdefault("timeout", self.timeout)
+        effective_key = None if anon else (api_key or self.api_key)
         while True:
-            _rate_limiter.wait(url, api_key)
+            _rate_limiter.wait(url, effective_key)
             try:
                 r = self.session.request(method, url, headers=headers, **kwargs)
                 if r.status_code == 443:
@@ -190,109 +193,109 @@ class NHentaiClient:
             except requests.exceptions.HTTPError:
                 raise
 
-    def _get(self, url, api_key=None, **kwargs):
-        return self._request("GET", url, api_key=api_key, **kwargs)
+    def _get(self, url, api_key=None, anon=False, **kwargs):
+        return self._request("GET", url, api_key=api_key, anon=anon, **kwargs)
 
-    def _post(self, url, api_key=None, **kwargs):
-        return self._request("POST", url, api_key=api_key, **kwargs)
+    def _post(self, url, api_key=None, anon=False, **kwargs):
+        return self._request("POST", url, api_key=api_key, anon=anon, **kwargs)
 
-    def _delete(self, url, api_key=None, **kwargs):
-        return self._request("DELETE", url, api_key=api_key, **kwargs)
+    def _delete(self, url, api_key=None, anon=False, **kwargs):
+        return self._request("DELETE", url, api_key=api_key, anon=anon, **kwargs)
 
-    def _raw_search(self, query, sort, page, api_key=None):
-        r = self._get(BASE_URL, api_key=api_key, params={"query": query, "sort": sort, "page": page})
+    def _raw_search(self, query, sort, page, api_key=None, anon=False):
+        r = self._get(BASE_URL, api_key=api_key, anon=anon, params={"query": query, "sort": sort, "page": page})
         return r.json()
 
-    def _raw_galleries(self, page=1, per_page=25, sort=None, api_key=None):
+    def _raw_galleries(self, page=1, per_page=25, sort=None, api_key=None, anon=False):
         params = {"page": page, "per_page": per_page}
         if sort:
             params["sort"] = sort
-        r = self._get(GALLERIES_URL, api_key=api_key, params=params)
+        r = self._get(GALLERIES_URL, api_key=api_key, anon=anon, params=params)
         return r.json()
 
-    def _raw_gallery(self, gallery_id, include=None, api_key=None):
+    def _raw_gallery(self, gallery_id, include=None, api_key=None, anon=False):
         params = {}
         if include:
             params["include"] = include
-        r = self._get(GALLERY_URL.format(id=gallery_id), api_key=api_key, params=params or None)
+        r = self._get(GALLERY_URL.format(id=gallery_id), api_key=api_key, anon=anon, params=params or None)
         return r.json()
 
-    def _get_cdn(self, api_key=None):
+    def _get_cdn(self, api_key=None, anon=False):
         if self._cdn_cache is not None:
             return self._cdn_cache
-        r = self._get(CDN_URL, api_key=api_key)
+        r = self._get(CDN_URL, api_key=api_key, anon=anon)
         data = r.json()
         self._cdn_cache = data
         return data
 
-    def _raw_download(self, gallery_id, fmt, api_key=None):
+    def _raw_download(self, gallery_id, fmt, api_key=None, anon=False):
         url = f"https://nhentai.net/api/v2/galleries/{gallery_id}/download"
-        r = self._post(url, api_key=api_key, params={"format": fmt})
+        r = self._post(url, api_key=api_key, anon=anon, params={"format": fmt})
         return r.json()
 
-    def _raw_fav_add(self, gallery_id, api_key=None):
-        r = self._post(GALLERY_FAV_URL.format(id=gallery_id), api_key=api_key)
+    def _raw_fav_add(self, gallery_id, api_key=None, anon=False):
+        r = self._post(GALLERY_FAV_URL.format(id=gallery_id), api_key=api_key, anon=anon)
         try:
             return r.json()
         except ValueError:
             return {}
 
-    def _raw_fav_rm(self, gallery_id, api_key=None):
-        r = self._delete(GALLERY_FAV_URL.format(id=gallery_id), api_key=api_key)
+    def _raw_fav_rm(self, gallery_id, api_key=None, anon=False):
+        r = self._delete(GALLERY_FAV_URL.format(id=gallery_id), api_key=api_key, anon=anon)
         try:
             return r.json()
         except ValueError:
             return {}
 
-    def _raw_favorites(self, page=1, api_key=None):
-        r = self._get(FAVORITES_URL, api_key=api_key, params={"page": page})
+    def _raw_favorites(self, page=1, api_key=None, anon=False):
+        r = self._get(FAVORITES_URL, api_key=api_key, anon=anon, params={"page": page})
         return r.json()
 
-    def _raw_tags_search(self, tag_type, query, limit=50, api_key=None):
+    def _raw_tags_search(self, tag_type, query, limit=50, api_key=None, anon=False):
         if tag_type not in VALID_TAG_TYPES:
             raise ValueError("Invalid tag type. Must be one of: {}".format(", ".join(sorted(VALID_TAG_TYPES))))
         payload = {"type": tag_type, "query": query, "limit": limit}
-        r = self._post(TAGS_SEARCH_URL, api_key=api_key, json=payload)
+        r = self._post(TAGS_SEARCH_URL, api_key=api_key, anon=anon, json=payload)
         return r.json()
 
-    def _raw_tags_by_ids(self, ids, api_key=None):
-        r = self._get(TAGS_IDS_URL, api_key=api_key, params={"ids": ",".join(str(i) for i in ids)})
+    def _raw_tags_by_ids(self, ids, api_key=None, anon=False):
+        r = self._get(TAGS_IDS_URL, api_key=api_key, anon=anon, params={"ids": ",".join(str(i) for i in ids)})
         return r.json()
 
-    def _raw_blacklist_get(self, api_key=None):
-        r = self._get(BLACKLIST_URL, api_key=api_key)
+    def _raw_blacklist_get(self, api_key=None, anon=False):
+        r = self._get(BLACKLIST_URL, api_key=api_key, anon=anon)
         return r.json()
 
-    def _raw_blacklist_update(self, added=None, removed=None, api_key=None):
+    def _raw_blacklist_update(self, added=None, removed=None, api_key=None, anon=False):
         payload = {"added": added or [], "removed": removed or []}
-        r = self._post(BLACKLIST_URL, api_key=api_key, json=payload)
+        r = self._post(BLACKLIST_URL, api_key=api_key, anon=anon, json=payload)
         return r.json()
 
-    def get_download_url(self, gallery_id, fmt="zip", api_key=None):
-        data = self._raw_download(gallery_id, fmt, api_key=api_key)
+    def get_download_url(self, gallery_id, fmt="zip", api_key=None, anon=False):
+        data = self._raw_download(gallery_id, fmt, api_key=api_key, anon=anon)
         return {"url": data.get("url"), "expires_at": data.get("expires_at")}
 
-    def download_gallery(self, gallery_id, fmt="zip", output_path=None, api_key=None):
-        info = self.get_download_url(gallery_id, fmt, api_key=api_key)
+    def download_gallery(self, gallery_id, fmt="zip", output_path=None, api_key=None, anon=False):
+        info = self.get_download_url(gallery_id, fmt, api_key=api_key, anon=anon)
         if output_path is None:
             output_path = f"{gallery_id}.{fmt}"
-        r = self._get(info["url"], api_key=api_key, stream=True)
+        r = self._get(info["url"], api_key=api_key, anon=anon, stream=True)
         r.raise_for_status()
         with open(output_path, "wb") as f:
             for chunk in r.iter_content(chunk_size=8192):
                 f.write(chunk)
         return output_path
 
-    def fav_add(self, gallery_id, api_key=None):
-        return self._raw_fav_add(gallery_id, api_key=api_key)
+    def fav_add(self, gallery_id, api_key=None, anon=False):
+        return self._raw_fav_add(gallery_id, api_key=api_key, anon=anon)
 
-    def fav_rm(self, gallery_id, api_key=None):
-        return self._raw_fav_rm(gallery_id, api_key=api_key)
+    def fav_rm(self, gallery_id, api_key=None, anon=False):
+        return self._raw_fav_rm(gallery_id, api_key=api_key, anon=anon)
 
-    def fav_list(self, page=1, api_key=None):
-        data = self._raw_favorites(page, api_key=api_key)
+    def fav_list(self, page=1, api_key=None, anon=False):
+        data = self._raw_favorites(page, api_key=api_key, anon=anon)
         raw_results = (data.get("result") or data.get("results") or [])[:25]
-        cdn = self._get_cdn(api_key=api_key)
+        cdn = self._get_cdn(api_key=api_key, anon=anon)
         thumb_servers = cdn.get("thumb_servers") or []
         servers = _assign_servers(thumb_servers, len(raw_results))
         results = []
@@ -300,14 +303,14 @@ class NHentaiClient:
             results.append(_format_gallery_item(item, base))
         return {"results": results, "num_pages": data.get("num_pages"), "total": data.get("total")}
 
-    def search(self, query, sort="date", page=1, api_key=None):
+    def search(self, query, sort="date", page=1, api_key=None, anon=False):
         if sort not in VALID_SORTS:
             raise ValueError(f"Invalid sort: {sort}")
         if page < 1:
             raise ValueError("page must be >= 1")
-        data = self._raw_search(query, sort, page, api_key=api_key)
+        data = self._raw_search(query, sort, page, api_key=api_key, anon=anon)
         raw_results = (data.get("result") or data.get("results") or [])[:25]
-        cdn = self._get_cdn(api_key=api_key)
+        cdn = self._get_cdn(api_key=api_key, anon=anon)
         thumb_servers = cdn.get("thumb_servers") or []
         if not thumb_servers:
             raise RuntimeError("No thumb_servers returned from /cdn")
@@ -317,16 +320,16 @@ class NHentaiClient:
             results.append(_format_gallery_item(item, base))
         return {"results": results, "num_pages": data.get("num_pages"), "total": data.get("total")}
 
-    def galleries(self, page=1, per_page=25, sort="date", api_key=None):
+    def galleries(self, page=1, per_page=25, sort="date", api_key=None, anon=False):
         if page < 1:
             raise ValueError("page must be >= 1")
         if per_page < 1 or per_page > 100:
             raise ValueError("per_page must be between 1 and 100")
         if sort not in VALID_SORTS:
             raise ValueError(f"Invalid sort: {sort}")
-        data = self._raw_galleries(page=page, per_page=per_page, sort=sort, api_key=api_key)
+        data = self._raw_galleries(page=page, per_page=per_page, sort=sort, api_key=api_key, anon=anon)
         raw_results = (data.get("result") or data.get("results") or [])[:per_page]
-        cdn = self._get_cdn(api_key=api_key)
+        cdn = self._get_cdn(api_key=api_key, anon=anon)
         thumb_servers = cdn.get("thumb_servers") or []
         if not thumb_servers:
             raise RuntimeError("No thumb_servers returned from /cdn")
@@ -341,12 +344,12 @@ class NHentaiClient:
             "total": data.get("total"),
         }
 
-    def tags_search(self, tag_type, query, limit=50, api_key=None):
-        data = self._raw_tags_search(tag_type, query, limit, api_key=api_key)
+    def tags_search(self, tag_type, query, limit=50, api_key=None, anon=False):
+        data = self._raw_tags_search(tag_type, query, limit, api_key=api_key, anon=anon)
         items = data if isinstance(data, list) else (data.get("result") or data.get("results") or [])
         return [{"id": t.get("id"), "name": t.get("name")} for t in items]
 
-    def tags_by_ids(self, ids, api_key=None):
+    def tags_by_ids(self, ids, api_key=None, anon=False):
         if isinstance(ids, (int, str)):
             ids = [ids]
         ids = list(ids)
@@ -354,7 +357,7 @@ class NHentaiClient:
             return []
         if len(ids) > MAX_TAGS_BY_IDS:
             raise ValueError(f"ids must contain at most {MAX_TAGS_BY_IDS} entries")
-        data = self._raw_tags_by_ids(ids, api_key=api_key)
+        data = self._raw_tags_by_ids(ids, api_key=api_key, anon=anon)
         items = data if isinstance(data, list) else (data.get("result") or data.get("results") or [])
         return [
             {
@@ -368,25 +371,25 @@ class NHentaiClient:
             for t in items
         ]
 
-    def blacklist(self, api_key=None):
-        data = self._raw_blacklist_get(api_key=api_key)
+    def blacklist(self, api_key=None, anon=False):
+        data = self._raw_blacklist_get(api_key=api_key, anon=anon)
         items = data.get("tags") or []
         return {
             "tags": [{"id": t.get("id"), "name": t.get("name")} for t in items],
             "count": data.get("count"),
         }
 
-    def blacklist_update(self, added=None, removed=None, api_key=None):
-        return self._raw_blacklist_update(added=added, removed=removed, api_key=api_key)
+    def blacklist_update(self, added=None, removed=None, api_key=None, anon=False):
+        return self._raw_blacklist_update(added=added, removed=removed, api_key=api_key, anon=anon)
 
-    def gallery(self, gallery_id, api_key=None):
-        data = self._raw_gallery(gallery_id, include="favorite", api_key=api_key)
+    def gallery(self, gallery_id, api_key=None, anon=False):
+        data = self._raw_gallery(gallery_id, include="favorite", api_key=api_key, anon=anon)
         title_obj = data.get("title") or {}
         pretty = title_obj.get("pretty")
         eng = title_obj.get("english")
         jp = title_obj.get("japanese")
         title = pretty if pretty not in (None, "") else (eng if eng not in (None, "") else jp)
-        cdn = self._get_cdn(api_key=api_key)
+        cdn = self._get_cdn(api_key=api_key, anon=anon)
         image_servers = cdn.get("image_servers") or []
         thumb_servers = cdn.get("thumb_servers") or []
         cover = data.get("cover") or {}
@@ -453,49 +456,49 @@ def close_client() -> None:
 atexit.register(close_client)
 
 
-def search(query: str, sort: str = "date", page: int = 1, api_key: Optional[str] = None):
-    return _get_default_client().search(query, sort=sort, page=page, api_key=api_key)
+def search(query: str, sort: str = "date", page: int = 1, api_key: Optional[str] = None, anon: bool = False):
+    return _get_default_client().search(query, sort=sort, page=page, api_key=api_key, anon=anon)
 
 
-def galleries(page: int = 1, per_page: int = 25, sort: str = "date", api_key: Optional[str] = None):
-    return _get_default_client().galleries(page=page, per_page=per_page, sort=sort, api_key=api_key)
+def galleries(page: int = 1, per_page: int = 25, sort: str = "date", api_key: Optional[str] = None, anon: bool = False):
+    return _get_default_client().galleries(page=page, per_page=per_page, sort=sort, api_key=api_key, anon=anon)
 
 
-def gallery(gallery_id, api_key: Optional[str] = None):
-    return _get_default_client().gallery(gallery_id, api_key=api_key)
+def gallery(gallery_id, api_key: Optional[str] = None, anon: bool = False):
+    return _get_default_client().gallery(gallery_id, api_key=api_key, anon=anon)
 
 
-def get_download_url(gallery_id, fmt: str = "zip", api_key: Optional[str] = None):
-    return _get_default_client().get_download_url(gallery_id, fmt=fmt, api_key=api_key)
+def get_download_url(gallery_id, fmt: str = "zip", api_key: Optional[str] = None, anon: bool = False):
+    return _get_default_client().get_download_url(gallery_id, fmt=fmt, api_key=api_key, anon=anon)
 
 
-def download_gallery(gallery_id, fmt: str = "zip", output_path: Optional[str] = None, api_key: Optional[str] = None):
-    return _get_default_client().download_gallery(gallery_id, fmt=fmt, output_path=output_path, api_key=api_key)
+def download_gallery(gallery_id, fmt: str = "zip", output_path: Optional[str] = None, api_key: Optional[str] = None, anon: bool = False):
+    return _get_default_client().download_gallery(gallery_id, fmt=fmt, output_path=output_path, api_key=api_key, anon=anon)
 
 
-def fav_add(gallery_id, api_key: Optional[str] = None):
-    return _get_default_client().fav_add(gallery_id, api_key=api_key)
+def fav_add(gallery_id, api_key: Optional[str] = None, anon: bool = False):
+    return _get_default_client().fav_add(gallery_id, api_key=api_key, anon=anon)
 
 
-def fav_rm(gallery_id, api_key: Optional[str] = None):
-    return _get_default_client().fav_rm(gallery_id, api_key=api_key)
+def fav_rm(gallery_id, api_key: Optional[str] = None, anon: bool = False):
+    return _get_default_client().fav_rm(gallery_id, api_key=api_key, anon=anon)
 
 
-def fav_list(page: int = 1, api_key: Optional[str] = None):
-    return _get_default_client().fav_list(page=page, api_key=api_key)
+def fav_list(page: int = 1, api_key: Optional[str] = None, anon: bool = False):
+    return _get_default_client().fav_list(page=page, api_key=api_key, anon=anon)
 
 
-def tags_search(tag_type: str, query: str, limit: int = 50, api_key: Optional[str] = None):
-    return _get_default_client().tags_search(tag_type, query, limit=limit, api_key=api_key)
+def tags_search(tag_type: str, query: str, limit: int = 50, api_key: Optional[str] = None, anon: bool = False):
+    return _get_default_client().tags_search(tag_type, query, limit=limit, api_key=api_key, anon=anon)
 
 
-def tags_by_ids(ids, api_key: Optional[str] = None):
-    return _get_default_client().tags_by_ids(ids, api_key=api_key)
+def tags_by_ids(ids, api_key: Optional[str] = None, anon: bool = False):
+    return _get_default_client().tags_by_ids(ids, api_key=api_key, anon=anon)
 
 
-def blacklist(api_key: Optional[str] = None):
-    return _get_default_client().blacklist(api_key=api_key)
+def blacklist(api_key: Optional[str] = None, anon: bool = False):
+    return _get_default_client().blacklist(api_key=api_key, anon=anon)
 
 
-def blacklist_update(added=None, removed=None, api_key: Optional[str] = None):
-    return _get_default_client().blacklist_update(added=added, removed=removed, api_key=api_key)
+def blacklist_update(added=None, removed=None, api_key: Optional[str] = None, anon: bool = False):
+    return _get_default_client().blacklist_update(added=added, removed=removed, api_key=api_key, anon=anon)
