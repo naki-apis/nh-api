@@ -5,6 +5,7 @@ import re
 import sys
 import time
 import zipfile
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from .client import NHentaiClient
@@ -156,24 +157,40 @@ def _swap_cdn(url, image_servers, attempt):
     return url
 
 
-def _download_single_page(session, url, image_servers, retries=4):
-    last_err = None
-    for attempt in range(retries):
+def _fetch_image(session, url, image_servers):
+    from .client import _rate_limiter
+    attempt = 0
+    while True:
         current = _swap_cdn(url, image_servers, attempt) if attempt else url
+        _rate_limiter.wait_host(current)
         try:
             r = session.get(current, timeout=30)
+            if r.status_code == 443:
+                time.sleep(61)
+                attempt += 1
+                continue
+            if r.status_code == 429:
+                time.sleep(61)
+                attempt += 1
+                continue
+            if r.status_code == 503:
+                time.sleep(61)
+                attempt += 1
+                continue
             r.raise_for_status()
             return r.content
-        except Exception as e:
-            last_err = e
-            time.sleep(1 + attempt)
-    raise last_err
+        except Exception:
+            time.sleep(61)
+            attempt += 1
 
 
 def _parse_ids(raw):
     ids = []
     for token in raw:
-        for part in token.split(","):
+        if isinstance(token, int):
+            ids.append(token)
+            continue
+        for part in str(token).split(","):
             part = part.strip()
             if not part:
                 continue
@@ -221,30 +238,6 @@ def _check_pillow():
         return True
     except Exception:
         return False
-
-
-def _download_all_pages(client, pages, image_servers):
-    total = len(pages)
-    results = {}
-    failed = []
-    completed = 0
-    with ThreadPoolExecutor(max_workers=min(50, total)) as executor:
-        futures = {}
-        for pg in pages:
-            futures[executor.submit(_download_single_page, client.session, pg["image"]["url"], image_servers)] = pg["number"]
-        for future in as_completed(futures):
-            num = futures[future]
-            try:
-                results[num] = future.result()
-            except Exception as e:
-                failed.append((num, str(e)))
-            completed += 1
-            pct = int(completed * 100 / total)
-            bar = "#" * (pct // 4) + "-" * (25 - pct // 4)
-            sys.stdout.write("\r[{}] {}%  ({}/{})  failed: {}".format(bar, pct, completed, total, len(failed)))
-            sys.stdout.flush()
-    sys.stdout.write("\n")
-    return results, failed
 
 
 def _write_cbz(output, results):
@@ -297,9 +290,46 @@ def _write_pdf(output, results, title=None, authors=None, subject=None, keywords
     first.save(output, "PDF", save_all=True, append_images=rest, **meta)
 
 
-def _download_one(client, gallery_id, output_dir, formats=None):
-    if formats is None:
-        formats = ["cbz"]
+def _resolve_formats(args):
+    requested = []
+    if args.raw:
+        requested.append("raw")
+    if args.pdf:
+        requested.append("pdf")
+    if args.zip:
+        requested.append("zip")
+    if args.cbz:
+        requested.append("cbz")
+    if not requested:
+        return ["cbz"]
+    return requested
+
+
+class _DownloadQueue:
+    def __init__(self):
+        self.total = 0
+        self.done = 0
+        self.failed = 0
+
+    def add(self, n=1):
+        self.total += n
+
+    def mark_done(self):
+        self.done += 1
+        self._print()
+
+    def mark_failed(self):
+        self.failed += 1
+        self._print()
+
+    def _print(self):
+        pct = int(self.done * 100 / self.total) if self.total else 0
+        bar = "#" * (pct // 4) + "-" * (25 - pct // 4)
+        sys.stdout.write("\r[{}] {}%  ({}/{} links)  failed: {}".format(bar, pct, self.done, self.total, self.failed))
+        sys.stdout.flush()
+
+
+def _download_one(client, gallery_id, output_dir, formats, queue):
     gallery = client.gallery(gallery_id)
     gid = gallery["id"]
     titles = gallery.get("titles") or {}
@@ -322,17 +352,36 @@ def _download_one(client, gallery_id, output_dir, formats=None):
     keywords = ", ".join(keyword_tags) if keyword_tags else None
     pages = gallery["pages"]
     image_servers = gallery.get("_image_servers") or ["https://i1.nhentai.net", "https://i2.nhentai.net", "https://i3.nhentai.net", "https://i4.nhentai.net"]
-    total = len(pages)
-    print("[*] [{}] {} ({} pages)".format(gid, title, total))
-    results, failed = _download_all_pages(client, pages, image_servers)
+    print("[*] [{}] {} ({} pages)".format(gid, title, len(pages)))
+    queue.add(len(pages))
+    results = {}
+    with ThreadPoolExecutor(max_workers=min(50, max(1, len(pages)))) as executor:
+        futures = {}
+        for pg in pages:
+            url = pg["image"]["url"]
+            if not url:
+                queue.mark_failed()
+                continue
+            futures[executor.submit(_fetch_image, client.session, url, image_servers)] = pg["number"]
+        for future in as_completed(futures):
+            num = futures[future]
+            try:
+                data = future.result()
+                if data:
+                    results[num] = data
+                    queue.mark_done()
+                else:
+                    queue.mark_failed()
+            except Exception:
+                queue.mark_failed()
     for fmt in formats:
         if fmt == "cbz":
             output = base + ".cbz"
             _write_cbz(output, results)
-            print("[+] Saved: {}  ({}/{} images)".format(output, len(results), total))
+            print("\n[+] Saved: {}  ({}/{} images)".format(output, len(results), len(pages)))
         elif fmt == "raw":
             _write_raw(base, results)
-            print("[+] Saved: {}/  ({}/{} images)".format(base, len(results), total))
+            print("\n[+] Saved: {}/  ({}/{} images)".format(base, len(results), len(pages)))
         elif fmt == "pdf":
             output = base + ".pdf"
             _write_pdf(
@@ -343,29 +392,11 @@ def _download_one(client, gallery_id, output_dir, formats=None):
                 keywords=keywords,
                 upload_date=gallery.get("upload_date"),
             )
-            print("[+] Saved: {}  ({}/{} images)".format(output, len(results), total))
+            print("\n[+] Saved: {}  ({}/{} images)".format(output, len(results), len(pages)))
         elif fmt == "zip":
             output = base + ".zip"
             _write_cbz(output, results)
-            print("[+] Saved: {}  ({}/{} images)".format(output, len(results), total))
-    if failed:
-        print("[!] Failed {} pages: {}".format(len(failed), ", ".join(str(n) for n, _ in failed)))
-    return base, len(results), len(failed)
-
-
-def _resolve_formats(args):
-    requested = []
-    if args.raw:
-        requested.append("raw")
-    if args.pdf:
-        requested.append("pdf")
-    if args.zip:
-        requested.append("zip")
-    if args.cbz:
-        requested.append("cbz")
-    if not requested:
-        return ["cbz"]
-    return requested
+            print("\n[+] Saved: {}  ({}/{} images)".format(output, len(results), len(pages)))
 
 
 def _do_download(args, api_key):
@@ -376,12 +407,13 @@ def _do_download(args, api_key):
     if "pdf" in formats and not _check_pillow():
         print("Error: Pillow is required for PDF output. Install it with: pip install Pillow", file=sys.stderr)
         sys.exit(1)
+    queue = _DownloadQueue()
     with NHentaiClient() as client:
         for gid in ids:
             try:
-                _download_one(client, gid, output_dir, formats=formats)
+                _download_one(client, gid, output_dir, formats, queue)
             except Exception as e:
-                print("[!] Error with {}: {}".format(gid, e), file=sys.stderr)
+                print("\n[!] Error with {}: {}".format(gid, e), file=sys.stderr)
 
 
 def main():
@@ -405,6 +437,7 @@ def main():
                "  nh-api dl 12345 --raw --pdf\n"
                "  nh-api dl 12345 --pdf --cbz\n"
                "  nh-api dl 1,2,3 -o ~/Downloads\n"
+               "  nh-api dl 1 2 3 -o ~/Downloads\n"
                "  nh-api fav add 12345\n"
                "  nh-api fav list\n"
                "  nh-api logout",
@@ -531,7 +564,6 @@ def main():
 
     p_logout = sub.add_parser(
         "logout",
-        
         help="Remove the saved API key",
         description="Delete the locally stored API key.",
     )
