@@ -275,7 +275,7 @@ def _build_output_base(output_dir, gid, title, tags):
     cat_str = "-".join(seen)
     safe_title = _safe_filename(title, gid)
     if cat_str:
-        base = "{} -{} {}".format(cat_str, gid, safe_title)
+        base = "{} - {} {}".format(cat_str, gid, safe_title)
     else:
         base = "{} - {}".format(gid, safe_title)
     if len(base) > 180:
