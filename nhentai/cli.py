@@ -291,10 +291,38 @@ def _check_pillow():
         return False
 
 
-def _write_cbz(output, results):
+def _build_comicinfo_xml(title, authors, subject, keywords, upload_date, gid, page_count):
+    import xml.etree.ElementTree as ET
+    root = ET.Element("ComicInfo")
+    root.set("xmlns:xsi", "http://www.w3.org/2001/XMLSchema-instance")
+    root.set("xmlns:xsd", "http://www.w3.org/2001/XMLSchema")
+    if title:
+        ET.SubElement(root, "Title").text = title
+    if authors:
+        ET.SubElement(root, "Writer").text = ", ".join(authors)
+    if subject:
+        ET.SubElement(root, "Genre").text = subject
+    if keywords:
+        ET.SubElement(root, "Tags").text = keywords
+    if upload_date:
+        ET.SubElement(root, "Year").text = upload_date[:4]
+        ET.SubElement(root, "Month").text = upload_date[5:7]
+        ET.SubElement(root, "Day").text = upload_date[8:10]
+    ET.SubElement(root, "PageCount").text = str(page_count)
+    ET.SubElement(root, "Web").text = "https://nhentai.net/g/{}".format(gid)
+    return ET.tostring(root, encoding="utf-8", xml_declaration=True)
+
+
+def _write_cbz(output, results, title=None, authors=None, subject=None, keywords=None, upload_date=None, gid=None):
     with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as zf:
         for num in sorted(results.keys()):
             zf.writestr("{:03d}.jpg".format(num), results[num])
+        if title or authors or subject or keywords:
+            xml = _build_comicinfo_xml(
+                title, authors, subject, keywords, upload_date,
+                gid, len(results)
+            )
+            zf.writestr("ComicInfo.xml", xml)
 
 
 def _write_raw(output_dir, results):
@@ -438,7 +466,15 @@ def _download_one(client, gallery_id, output_dir, formats, queue, keepthumb=Fals
     for fmt in formats:
         if fmt == "cbz":
             output = base + ".cbz"
-            _write_cbz(output, results)
+            _write_cbz(
+                output, results,
+                title=title,
+                authors=authors,
+                subject=subject,
+                keywords=keywords,
+                upload_date=gallery.get("upload_date"),
+                gid=gid,
+            )
             print("\n[+] Saved: {}  ({}/{} images)".format(output, len(results), len(pages)))
         elif fmt == "raw":
             _write_raw(base, results)
@@ -456,7 +492,15 @@ def _download_one(client, gallery_id, output_dir, formats, queue, keepthumb=Fals
             print("\n[+] Saved: {}  ({}/{} images)".format(output, len(results), len(pages)))
         elif fmt == "zip":
             output = base + ".zip"
-            _write_cbz(output, results)
+            _write_cbz(
+                output, results,
+                title=title,
+                authors=authors,
+                subject=subject,
+                keywords=keywords,
+                upload_date=gallery.get("upload_date"),
+                gid=gid,
+            )
             print("\n[+] Saved: {}  ({}/{} images)".format(output, len(results), len(pages)))
     if keepthumb:
         _save_keepthumb(base, results)
