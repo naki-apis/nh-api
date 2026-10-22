@@ -141,8 +141,8 @@ call.
   ```json
   {
     "id": 1234,
-    "username": "naki",
-    "slug": "naki",
+    "username": "username",
+    "slug": "username",
     "avatar_url": "https://.../avatar.png",
     "theme": "dark",
     "is_staff": false,
