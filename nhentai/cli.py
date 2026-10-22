@@ -291,7 +291,7 @@ def _check_pillow():
         return False
 
 
-def _build_comicinfo_xml(title, authors, subject, keywords, upload_date, gid, page_count):
+def _build_comicinfo_xml(title, authors, subject, upload_date, gid, page_count):
     import xml.etree.ElementTree as ET
     root = ET.Element("ComicInfo")
     root.set("xmlns:xsi", "http://www.w3.org/2001/XMLSchema-instance")
@@ -302,8 +302,6 @@ def _build_comicinfo_xml(title, authors, subject, keywords, upload_date, gid, pa
         ET.SubElement(root, "Writer").text = ", ".join(authors)
     if subject:
         ET.SubElement(root, "Genre").text = subject
-    if keywords:
-        ET.SubElement(root, "Tags").text = keywords
     if upload_date:
         ET.SubElement(root, "Year").text = upload_date[:4]
         ET.SubElement(root, "Month").text = upload_date[5:7]
@@ -313,13 +311,13 @@ def _build_comicinfo_xml(title, authors, subject, keywords, upload_date, gid, pa
     return ET.tostring(root, encoding="utf-8", xml_declaration=True)
 
 
-def _write_cbz(output, results, title=None, authors=None, subject=None, keywords=None, upload_date=None, gid=None):
+def _write_cbz(output, results, title=None, authors=None, subject=None, upload_date=None, gid=None):
     with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as zf:
         for num in sorted(results.keys()):
             zf.writestr("{:03d}.jpg".format(num), results[num])
-        if title or authors or subject or keywords:
+        if title or authors or subject:
             xml = _build_comicinfo_xml(
-                title, authors, subject, keywords, upload_date,
+                title, authors, subject, upload_date,
                 gid, len(results)
             )
             zf.writestr("ComicInfo.xml", xml)
@@ -426,19 +424,13 @@ def _download_one(client, gallery_id, output_dir, formats, queue, keepthumb=Fals
     base = _build_output_base(output_dir, gid, title, gallery.get("tags"))
     tags = gallery.get("tags") or {}
     authors = [t.get("name") for t in tags.get("artist", []) if t.get("name")]
-    subject_tags = []
-    keyword_tags = []
+    genre_parts = []
     for ttype, items in tags.items():
         for t in items:
             name = t.get("name")
-            if not name:
-                continue
-            if ttype == "tag":
-                keyword_tags.append(name)
-            if ttype in ("category", "group", "parody", "character", "language"):
-                subject_tags.append(name)
-    subject = ", ".join(subject_tags) if subject_tags else None
-    keywords = ", ".join(keyword_tags) if keyword_tags else None
+            if name:
+                genre_parts.append(name)
+    subject = ", ".join(genre_parts) if genre_parts else None
     pages = gallery["pages"]
     image_servers = gallery.get("_image_servers") or ["https://i1.nhentai.net", "https://i2.nhentai.net", "https://i3.nhentai.net", "https://i4.nhentai.net"]
     print("[*] [{}] {} ({} pages)".format(gid, title, len(pages)))
@@ -471,7 +463,6 @@ def _download_one(client, gallery_id, output_dir, formats, queue, keepthumb=Fals
                 title=title,
                 authors=authors,
                 subject=subject,
-                keywords=keywords,
                 upload_date=gallery.get("upload_date"),
                 gid=gid,
             )
@@ -486,7 +477,7 @@ def _download_one(client, gallery_id, output_dir, formats, queue, keepthumb=Fals
                 title=title,
                 authors=authors,
                 subject=subject,
-                keywords=keywords,
+                keywords=None,
                 upload_date=gallery.get("upload_date"),
             )
             print("\n[+] Saved: {}  ({}/{} images)".format(output, len(results), len(pages)))
@@ -497,7 +488,6 @@ def _download_one(client, gallery_id, output_dir, formats, queue, keepthumb=Fals
                 title=title,
                 authors=authors,
                 subject=subject,
-                keywords=keywords,
                 upload_date=gallery.get("upload_date"),
                 gid=gid,
             )
