@@ -1,43 +1,32 @@
 import json
 import os
-from pathlib import Path
-from typing import Optional
 
-CONFIG_DIR = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "nh-api"
-CONFIG_FILE = CONFIG_DIR / "config.json"
+_SETTINGS_PATH = os.path.join(os.path.expanduser("~"), ".nh-api", "settings.json")
+_VALID_FORMATS = ("cbz", "pdf", "raw", "zip")
 
 
-def _load() -> dict:
-    if not CONFIG_FILE.exists():
-        return {}
+def _load_settings():
     try:
-        return json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
+        with open(_SETTINGS_PATH, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
         return {}
 
 
-def _save(data: dict) -> None:
-    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    CONFIG_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
+def _save_settings(data):
+    os.makedirs(os.path.dirname(_SETTINGS_PATH), exist_ok=True)
+    with open(_SETTINGS_PATH, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
 
 
-def get_api_key() -> Optional[str]:
-    env_key = os.environ.get("NH_API_KEY")
-    if env_key:
-        return env_key
-    return _load().get("api_key")
+def get_default_format():
+    fmt = _load_settings().get("default_format")
+    return fmt if fmt in _VALID_FORMATS else "cbz"
 
 
-def set_api_key(api_key: str) -> None:
-    data = _load()
-    data["api_key"] = api_key
-    _save(data)
-
-
-def delete_api_key() -> bool:
-    data = _load()
-    if "api_key" in data:
-        del data["api_key"]
-        _save(data)
-        return True
-    return False
+def set_default_format(fmt):
+    if fmt not in _VALID_FORMATS:
+        raise ValueError("Invalid format: {}".format(fmt))
+    data = _load_settings()
+    data["default_format"] = fmt
+    _save_settings(data)
