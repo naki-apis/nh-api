@@ -2,6 +2,7 @@ import argparse
 import json
 import os
 import re
+import subprocess
 import sys
 import time
 import zipfile
@@ -9,7 +10,15 @@ from collections import deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from .client import NHentaiClient, _rate_limiter
-from .config import get_api_key, set_api_key, delete_api_key
+from .config import (
+    get_api_key,
+    set_api_key,
+    delete_api_key,
+    get_default_format,
+    set_default_format,
+)
+
+VALID_FORMATS = ("cbz", "pdf", "raw", "zip")
 
 
 def _require_auth(api_key):
@@ -291,6 +300,28 @@ def _check_pillow():
         return False
 
 
+def _prompt_install_pillow():
+    print("Pillow is required for PDF output but is not installed.", file=sys.stderr)
+    try:
+        answer = input("Install Pillow now? [Y/N]: ").strip().lower()
+    except EOFError:
+        answer = "n"
+    if answer not in ("y", "yes", "s", "si", "sí"):
+        print("Aborted: Pillow not installed.", file=sys.stderr)
+        return False
+    print("Installing Pillow via pip...")
+    try:
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "Pillow"])
+    except subprocess.CalledProcessError as e:
+        print("Error: pip install Pillow failed (exit {}).".format(e.returncode), file=sys.stderr)
+        return False
+    if _check_pillow():
+        print("Pillow installed successfully.")
+        return True
+    print("Error: Pillow still not importable after install.", file=sys.stderr)
+    return False
+
+
 def _build_comicinfo_xml(title, authors, subject, upload_date, gid, page_count):
     import xml.etree.ElementTree as ET
     root = ET.Element("ComicInfo")
@@ -377,9 +408,12 @@ def _resolve_formats(args):
         requested.append("zip")
     if args.cbz:
         requested.append("cbz")
-    if not requested:
-        return ["cbz"]
-    return requested
+    if requested:
+        return requested
+    default_fmt = get_default_format() or "cbz"
+    if default_fmt not in VALID_FORMATS:
+        default_fmt = "cbz"
+    return [default_fmt]
 
 
 class _DownloadQueue:
@@ -497,13 +531,25 @@ def _download_one(client, gallery_id, output_dir, formats, queue, keepthumb=Fals
 
 
 def _do_download(args, api_key):
+    if getattr(args, "default", None):
+        set_default_format(args.default)
+        print("Default format set to: {}".format(args.default))
+
+    if not args.gallery_id:
+        if getattr(args, "default", None):
+            return
+        print("Error: no gallery IDs provided.", file=sys.stderr)
+        sys.exit(1)
+
     ids = _parse_ids(args.gallery_id)
     output_dir = args.output or "."
     os.makedirs(output_dir, exist_ok=True)
     formats = _resolve_formats(args)
+
     if "pdf" in formats and not _check_pillow():
-        print("Error: Pillow is required for PDF output. Install it with: pip install Pillow", file=sys.stderr)
-        sys.exit(1)
+        if not _prompt_install_pillow():
+            sys.exit(1)
+
     queue = _DownloadQueue()
     with NHentaiClient() as client:
         for gid in ids:
@@ -521,7 +567,7 @@ def main():
                "  nh-api login nhk_xxxxxxxx\n"
                "  nh-api login <user_token_from_cookies>\n"
                "  nh-api search language:english catgirl\n"
-               "  nh-api search -q 'pages:<5 inuboshi'\n"
+               "  nh-api search -q 'pages:<5 language:english'\n"
                "  nh-api search \"language:english catgirl\"\n"
                "  nh-api search catgirl -p 2\n"
                "  nh-api search catgirl -i\n"
@@ -530,7 +576,12 @@ def main():
                "  nh-api code 12345\n"
                "  nh-api code 12345 -i\n"
                "  nh-api code 12345 -txt\n"
+               "  nh-api dl --default pdf\n"
+               "  nh-api dl --default zip\n"
+               "  nh-api dl --default raw\n"
+               "  nh-api dl --default cbz\n"
                "  nh-api dl 12345\n"
+               "  nh-api dl 12345 --default pdf\n"
                "  nh-api dl 12345 --raw\n"
                "  nh-api dl 12345 --pdf\n"
                "  nh-api dl 12345 --raw --pdf\n"
@@ -630,14 +681,32 @@ def main():
         "download",
         aliases=["dl"],
         help="Download galleries (no API key required)",
-        description="Download one or more galleries. Default output is .cbz. You can combine any of --raw, --pdf, --zip and --cbz to produce multiple outputs from a single download. If any format flag is used, --cbz is no longer implicit unless you also pass --cbz explicitly. Accepts a single ID, a comma-separated list, or space-separated IDs.",
+        description=(
+            "Download one or more galleries. By default uses the format saved in settings "
+            "(cbz unless changed with '--default <fmt>'). You can combine --raw, --pdf, "
+            "--zip and --cbz to produce multiple outputs from a single download. If any "
+            "explicit format flag is passed, the saved default is ignored for this run. "
+            "Accepts a single ID, a comma-separated list, or space-separated IDs. "
+            "You can also run 'dl --default <fmt>' with no IDs to only change the default."
+        ),
     )
-    p_dl.add_argument("gallery_id", nargs="+", help="One or more gallery IDs (e.g. 12345 or 1,2,3 or 1 2 3)")
+    p_dl.add_argument("gallery_id", nargs="*", help="One or more gallery IDs (e.g. 12345 or 1,2,3 or 1 2 3). Can be omitted when using --default.")
     p_dl.add_argument("-o", "--output", default=None, help="Output directory (default: current directory)")
     p_dl.add_argument("--raw", action="store_true", help="Save individual images into a folder instead of a CBZ")
     p_dl.add_argument("--pdf", action="store_true", help="Build a PDF using Pillow (must be installed)")
     p_dl.add_argument("--zip", action="store_true", help="Save a ZIP archive")
-    p_dl.add_argument("--cbz", action="store_true", help="Save a CBZ archive (default if no other format is used)")
+    p_dl.add_argument("--cbz", action="store_true", help="Save a CBZ archive")
+    p_dl.add_argument(
+        "--default",
+        choices=VALID_FORMATS,
+        default=None,
+        help=(
+            "Persist this as the default download format. If no gallery IDs are given, "
+            "only the default is saved and nothing is downloaded. When IDs are given and "
+            "no explicit --raw/--pdf/--zip/--cbz flag is passed, this format is also used "
+            "for the current download. Use '--default cbz' to restore the original behavior."
+        ),
+    )
     p_dl.add_argument("--keepthumb", "-KT", action="store_true", dest="keepthumb", help=argparse.SUPPRESS)
     p_dl.set_defaults(func=_do_download)
 
