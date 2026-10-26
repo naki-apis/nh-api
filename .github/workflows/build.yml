@@ -25,7 +25,7 @@ jobs:
         pip install pyinstaller
 
     - name: Build with PyInstaller
-      run: pyinstaller --onefile --name nh-api --hidden-import=nhentai.cli --hidden-import=nhentai.client --hidden-import=nhentai.config nhentai.main.py
+      run: pyinstaller --onefile --name nh-api --hidden-import=nhentai.cli --hidden-import=nhentai.client --hidden-import=nhentai.config main.py
 
     - name: Upload artifact
       uses: actions/upload-artifact@v4
