@@ -6,9 +6,8 @@ on:
   workflow_dispatch:
 
 jobs:
-  build:
+  build-without-pillow:
     runs-on: windows-latest
-
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
@@ -21,14 +20,38 @@ jobs:
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install .
-        pip install pyinstaller
+        pip install requests pyinstaller
 
-    - name: Build with PyInstaller
-      run: pyinstaller --onefile --name nh-api --hidden-import=nhentai.cli --hidden-import=nhentai.client --hidden-import=nhentai.config main.py
+    - name: Build without Pillow
+      run: pyinstaller --onefile --name nh-api --hidden-import=xml.etree.ElementTree nh_api_exe.py
 
     - name: Upload artifact
       uses: actions/upload-artifact@v4
       with:
         name: nh-api
+        path: dist/nh-api.exe
+
+  build-with-pillow:
+    runs-on: windows-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install requests Pillow pyinstaller
+
+    - name: Build with Pillow
+      run: pyinstaller --onefile --name nh-api --collect-all PIL --hidden-import=xml.etree.ElementTree nh_api_exe.py
+
+    - name: Upload artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: nh-api-pillow
         path: dist/nh-api.exe
