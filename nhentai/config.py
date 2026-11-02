@@ -30,3 +30,21 @@ def set_default_format(fmt):
     data = _load_settings()
     data["default_format"] = fmt
     _save_settings(data)
+
+def get_api_key():
+    return _load_settings().get("api_key")
+
+
+def set_api_key(key):
+    data = _load_settings()
+    if key:
+        data["api_key"] = key
+    else:
+        data.pop("api_key", None)
+    _save_settings(data)
+
+
+def delete_api_key():
+    data = _load_settings()
+    data.pop("api_key", None)
+    _save_settings(data)
